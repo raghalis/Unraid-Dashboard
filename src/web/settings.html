@@ -1,0 +1,126 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Settings · Unraid Control Panel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#0b1220;color:#e8ecf1}
+    header{padding:16px 20px;background:#0f1629;border-bottom:1px solid #223}
+    h1{margin:0;font-size:18px}
+    .wrap{padding:20px;max-width:900px;margin:0 auto}
+    .card{background:#111a33;border:1px solid #223;border-radius:12px;padding:16px;margin-bottom:16px}
+    label{display:block;margin:8px 0 4px}
+    input{width:100%;padding:8px;border-radius:8px;border:1px solid #345;background:#182547;color:#e8ecf1}
+    button{border:1px solid #345;background:#182547;color:#e8ecf1;padding:8px 12px;border-radius:8px;cursor:pointer}
+    button:hover{filter:brightness(1.1)}
+    table{width:100%;border-collapse:collapse}
+    td,th{padding:8px;border-bottom:1px solid #223;vertical-align:middle}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-block;padding:2px 8px;border:1px solid #345;border-radius:999px;background:#16213a}
+    .muted{opacity:.75}
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h1>Settings</h1>
+      <a href="/" style="color:#9fb6ff;text-decoration:none">← Back</a>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="card">
+      <h3 style="margin-top:0">Servers</h3>
+      <table id="hosts"><thead>
+        <tr><th>Name</th><th>Base URL</th><th>MAC</th><th>Token</th><th>Actions</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Add / Update Server</h3>
+      <label>Name</label><input id="name" placeholder="Unraid-A" />
+      <label>Base URL</label><input id="base" placeholder="https://unraid-a.local" />
+      <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="AA:BB:CC:DD:EE:FF" />
+      <div class="row" style="margin-top:12px">
+        <button onclick="saveHost()">Save Host</button>
+        <button onclick="setTok()">Set/Update Token</button>
+        <button onclick="testHost()">Test Connection</button>
+      </div>
+      <div id="msg" class="muted" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+<script>
+async function j(url, opts={}) {
+  opts.headers = Object.assign({}, opts.headers||{}, { 'X-CSRF-Token': '' }); // server injects token in response; not needed on GET
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+async function load() {
+  const data = await j('/api/settings/hosts');
+  const tb = document.querySelector('#hosts tbody');
+  tb.innerHTML = '';
+  for (const h of data) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${h.name}</td>
+      <td class="muted">${h.baseUrl}</td>
+      <td>${h.mac}</td>
+      <td>${h.tokenSet ? '•••• set' : '<span class="muted">not set</span>'}</td>
+      <td class="row">
+        <button onclick="prefill('${encodeURIComponent(h.name)}','${encodeURIComponent(h.baseUrl)}','${encodeURIComponent(h.mac)}')">Edit</button>
+        <button onclick="delHost('${encodeURIComponent(h.baseUrl)}')">Delete</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+}
+function prefill(n,b,m) {
+  document.getElementById('name').value = decodeURIComponent(n);
+  document.getElementById('base').value = decodeURIComponent(b);
+  document.getElementById('mac').value  = decodeURIComponent(m);
+}
+function msg(s) { document.getElementById('msg').textContent = s; }
+async function saveHost() {
+  const body = {
+    name: document.getElementById('name').value.trim(),
+    baseUrl: document.getElementById('base').value.trim(),
+    mac: document.getElementById('mac').value.trim()
+  };
+  try {
+    await j('/api/settings/host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    msg('Host saved.');
+    await load();
+  } catch (e) { msg('Error: ' + e.message); }
+}
+async function setTok() {
+  const baseUrl = document.getElementById('base').value.trim();
+  if (!baseUrl) { msg('Enter Base URL first.'); return; }
+  const token = prompt('Enter API token for ' + baseUrl + ':', '');
+  if (token === null) return;
+  try {
+    await j('/api/settings/token', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, token }) });
+    msg('Token updated.');
+    await load();
+  } catch (e) { msg('Error: ' + e.message); }
+}
+async function testHost() {
+  const base = encodeURIComponent(document.getElementById('base').value.trim());
+  if (!base) { msg('Enter Base URL first.'); return; }
+  try {
+    const r = await j('/api/settings/test?base=' + base);
+    msg('OK: ' + JSON.stringify(r.system || {}));
+  } catch (e) { msg('FAILED: ' + e.message); }
+}
+async function delHost(baseEnc) {
+  if (!confirm('Delete this host?')) return;
+  try {
+    await j('/api/settings/host?base=' + baseEnc, { method:'DELETE' });
+    await load();
+    msg('Host deleted.');
+  } catch (e) { msg('Error: ' + e.message); }
+}
+load().catch(e => msg(e.message));
+</script>
+</body>
+</html>
