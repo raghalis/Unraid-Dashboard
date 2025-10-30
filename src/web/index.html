@@ -24,7 +24,12 @@
   </style>
 </head>
 <body>
-  <header><h1>Unraid Control Panel</h1></header>
+  <header>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h1>Unraid Control Panel</h1>
+      <a href="/settings" style="color:#9fb6ff;text-decoration:none">Settings</a>
+    </div>
+  </header>
   <div class="wrap">
     <div class="row" style="margin-bottom:12px">
       <button onclick="refreshAll()">Refresh All</button>
