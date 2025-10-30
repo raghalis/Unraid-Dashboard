@@ -1,0 +1,17 @@
+{
+  "name": "unraid-control-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "NODE_ENV=development node src/server.js"
+  },
+  "dependencies": {
+    "basic-auth": "^2.0.1",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
+    "nocache": "^4.0.0",
+    "wake_on_lan": "^1.0.0"
+  }
+}
