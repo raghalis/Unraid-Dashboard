@@ -6,11 +6,25 @@ import { fileURLToPath } from 'url';
 import { basicAuth } from './auth/basicAuth.js';
 import { sendWol } from './api/wol.js';
 import { getHostStatus, listContainers, listVMs, containerAction, vmAction, powerAction } from './api/unraid.js';
+import crypto from 'crypto';
+import { initStore, listHosts, upsertHost, deleteHost, setToken, tokensSummary } from './store/configStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
 app.use(nocache());
+
+initStore();
+
+// CSRF token (simple per-process)
+const CSRF = crypto.randomBytes(16).toString('hex');
+app.use((req, res, next) => {
+  res.set('X-CSRF-Token', CSRF);
+  if (req.method !== 'GET' && req.path.startsWith('/api/')) {
+    if (req.headers['x-csrf-token'] !== CSRF) return res.status(403).json({ error: 'Bad CSRF' });
+  }
+  next();
+});
 
 // Auth
 const USER = process.env.BASIC_AUTH_USER || '';
@@ -102,6 +116,60 @@ app.post('/api/host', async (req, res) => {
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
   }
+});
+
+// Settings API
+app.get('/api/settings/hosts', (req, res) => {
+  const hosts = listHosts();
+  const tokens = tokensSummary();
+  // mask tokens; client only knows whether one is set
+  const withMask = hosts.map(h => ({ ...h, tokenSet: !!tokens[h.baseUrl] }));
+  res.json(withMask);
+});
+
+app.post('/api/settings/host', (req, res) => {
+  try {
+    const saved = upsertHost(req.body || {});
+    res.json({ ok: true, host: { ...saved, tokenSet: tokensSummary()[saved.baseUrl] || false } });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+app.delete('/api/settings/host', (req, res) => {
+  const base = String(req.query.base || '');
+  try {
+    deleteHost(base);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+app.post('/api/settings/token', (req, res) => {
+  const { baseUrl, token } = req.body || {};
+  try {
+    setToken(baseUrl, token);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+app.get('/api/settings/test', async (req, res) => {
+  const base = String(req.query.base || '');
+  try {
+    const r = await getHostStatus(base);
+    if (!r.ok) return res.status(500).json({ ok: false, error: r.error });
+    res.json({ ok: true, system: r.data?.system || null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// Settings page
+app.get('/settings', (req, res) => {
+  res.sendFile(path.join(__dirname, 'web', 'settings.html'));
 });
 
 const PORT = process.env.PORT || 8080;
