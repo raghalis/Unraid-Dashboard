@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Unraid-A",
+    "baseUrl": "https://unraid-a.local",
+    "mac": "AA:BB:CC:DD:EE:01"
+  },
+  {
+    "name": "Unraid-B",
+    "baseUrl": "https://unraid-b.local",
+    "mac": "AA:BB:CC:DD:EE:02"
+  }
+]
