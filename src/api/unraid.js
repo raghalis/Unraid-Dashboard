@@ -1,15 +1,27 @@
 import fetch from 'node-fetch';
-import fs from 'fs';
 import https from 'https';
-
-const tokensPath = '/run/secrets/unraid_tokens.json';
-let TOKEN_MAP = {};
-if (fs.existsSync(tokensPath)) {
-  TOKEN_MAP = JSON.parse(fs.readFileSync(tokensPath, 'utf8'));
-}
+import { getToken } from '../store/configStore.js';
 
 const allowSelfSigned = (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true';
 const httpsAgent = new https.Agent({ rejectUnauthorized: !allowSelfSigned });
+
+async function gql(baseUrl, query, variables = {}) {
+  const token = getToken(baseUrl);
+  if (!token) throw new Error(`No token for ${baseUrl}`);
+  const res = await fetch(`${baseUrl}/graphql`, {
+    method: 'POST',
+    agent: httpsAgent,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  if (!res.ok) throw new Error(`GQL ${baseUrl} ${res.status}: ${await res.text()}`);
+  const json = await res.json();
+  if (json.errors) throw new Error(JSON.stringify(json.errors));
+  return json.data;
+}
 
 /**
  * Minimal Unraid API adapter
