@@ -13,7 +13,7 @@
     label{display:block;margin:8px 0 4px}
     input{width:100%;padding:8px;border-radius:8px;border:1px solid #345;background:#182547;color:#e8ecf1}
     button{border:1px solid #345;background:#182547;color:#e8ecf1;padding:8px 12px;border-radius:8px;cursor:pointer}
-    button:hover{filter:brightness(1.1)}
+    button:hover{filter:brightness(1.08)}
     table{width:100%;border-collapse:collapse}
     td,th{padding:8px;border-bottom:1px solid #223;vertical-align:middle}
     .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -48,9 +48,8 @@
       <button onclick="testHost()">Test Connection</button>
     </div>
     <div class="muted" style="margin-top:8px">
-      Token tip: On Unraid 7+, create an API token with Docker/VM/System permissions
-      (e.g., <em>Users → API Tokens</em>), then paste it here. If using self-signed HTTPS,
-      leave “UNRAID_ALLOW_SELF_SIGNED=true” in the container env.
+      Token tip: create an API token with Docker/VM/System permissions (Users → API Tokens),
+      paste it here. For self-signed HTTPS, keep <code>UNRAID_ALLOW_SELF_SIGNED=true</code>.
     </div>
     <div id="msg" class="muted" style="margin-top:8px"></div>
   </div>
@@ -66,11 +65,7 @@ async function j(url, opts={}) {
   const res = await fetch(url, opts);
   const text = await res.text();
   let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw:text }; }
-  if (!res.ok) {
-    const msg = json.message || json.error || `HTTP ${res.status}`;
-    console.error('API error', { url, status: res.status, body: json });
-    throw new Error(msg);
-  }
+  if (!res.ok) { const msg = json.message || json.error || `HTTP ${res.status}`; console.error('API error', { url, status: res.status, body: json }); throw new Error(msg); }
   return json;
 }
 function msg(s){ document.getElementById('msg').textContent = s; }
@@ -93,10 +88,7 @@ async function load() {
         </td>`;
       tb.appendChild(tr);
     }
-  } catch(e) {
-    console.error('load() failed', e);
-    msg('Failed to load hosts: ' + e.message);
-  }
+  } catch(e) { console.error('load() failed', e); msg('Failed to load hosts: ' + e.message); }
 }
 function prefill(n,b,m){
   document.getElementById('name').value = decodeURIComponent(n);
@@ -109,31 +101,22 @@ async function saveHost(){
     baseUrl: document.getElementById('base').value.trim(),
     mac: document.getElementById('mac').value.trim()
   };
-  try {
-    await j('/api/settings/host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-    msg('Host saved.');
-    await load();
-  } catch(e){ msg(e.message); }
+  try { await j('/api/settings/host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); msg('Host saved.'); await load(); }
+  catch(e){ msg(e.message); }
 }
 async function setTok(){
   const baseUrl = document.getElementById('base').value.trim();
   if (!baseUrl) { msg('Enter Base URL first.'); return; }
   const token = prompt('Paste API token for ' + baseUrl + ':', '');
   if (token === null) return;
-  try {
-    await j('/api/settings/token', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, token }) });
-    const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl));
-    msg(r.ok ? ('Token saved. Connection OK.') : ('Token saved, but test failed.'));
-    await load();
-  } catch(e){ msg(e.message); }
+  try { await j('/api/settings/token', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, token }) }); const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl)); msg(r.ok ? ('Token saved. Connection OK.') : ('Token saved, but test failed.')); await load(); }
+  catch(e){ msg(e.message); }
 }
 async function testHost(){
   const baseUrl = document.getElementById('base').value.trim();
   if (!baseUrl) { msg('Enter Base URL first.'); return; }
-  try {
-    const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl));
-    msg(r.ok ? 'OK.' : 'Failed. See logs.');
-  } catch(e){ msg(e.message); }
+  try { const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl)); msg(r.ok ? 'OK.' : 'Failed. See logs.'); }
+  catch(e){ msg(e.message); }
 }
 async function delHost(baseEnc){
   if (!confirm('Delete this host?')) return;
