@@ -39,7 +39,9 @@
 
   <div class="card">
     <h3 style="margin-top:0">Add / Update Server</h3>
-    <label>Name</label><input id="name" placeholder="Unraid-A" />
+    <label>Base URL</label>
+    <input id="base" placeholder="https://unraid-a.local" oninput="baseHint()" />
+    <div id="base-hint" class="muted" style="margin-top:4px"></div>
     <label>Base URL</label><input id="base" placeholder="https://unraid-a.local" />
     <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="AA:BB:CC:DD:EE:FF" />
     <div class="row" style="margin-top:12px">
@@ -59,6 +61,15 @@
 <script>
 function getCookie(name){
   return document.cookie.split('; ').find(r=>r.startsWith(name+'='))?.split('=')[1] || '';
+}
+function baseHint(){
+  const v = document.getElementById('base').value.trim();
+  const el = document.getElementById('base-hint');
+  if (v.startsWith('http://')) {
+    el.textContent = 'Note: HTTP detected. That’s fine on trusted LAN, but token auth and some features expect HTTPS. If you use HTTPS with a self-signed cert, keep UNRAID_ALLOW_SELF_SIGNED=true.';
+  } else {
+    el.textContent = '';
+  }
 }
 async function j(url, opts={}) {
   const csrf = getCookie('ucp_csrf');
