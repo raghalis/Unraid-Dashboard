@@ -5,39 +5,33 @@ const DATA_DIR = '/app/data';
 const HOSTS_PATH = path.join(DATA_DIR, 'hosts.json');
 const TOKENS_PATH = path.join(DATA_DIR, 'tokens.json');
 
-// legacy locations (for one-time import)
+// legacy (one-time import if present and data missing)
 const LEGACY_HOSTS = '/app/config/hosts.json';
 const LEGACY_TOKENS = '/run/secrets/unraid_tokens.json';
+const EXAMPLE_HOSTS = '/app/examples/config.hosts.json';
+const EXAMPLE_TOKENS = '/app/examples/secrets.tokens.json';
 
 function ensureDir() {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 }
+function readJson(p, fb) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fb; } }
+function writeJson(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2)); }
 
-function readJson(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fallback; }
-}
-function writeJson(p, obj) {
-  fs.writeFileSync(p, JSON.stringify(obj, null, 2));
-}
-
-// crude validators
-function isMac(s) { return /^[0-9A-Fa-f:]{17}$/.test(s); }
+function isMac(s) { return /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(s); }
 function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
 
 export function initStore() {
   ensureDir();
-  // migrate once if data files not present
-  if (!fs.existsSync(HOSTS_PATH) && fs.existsSync(LEGACY_HOSTS)) {
-    const hosts = readJson(LEGACY_HOSTS, []);
-    writeJson(HOSTS_PATH, hosts);
+  if (!fs.existsSync(HOSTS_PATH)) {
+    const seed = fs.existsSync(LEGACY_HOSTS) ? LEGACY_HOSTS :
+                 fs.existsSync(EXAMPLE_HOSTS) ? EXAMPLE_HOSTS : null;
+    writeJson(HOSTS_PATH, seed ? readJson(seed, []) : []);
   }
-  if (!fs.existsSync(TOKENS_PATH) && fs.existsSync(LEGACY_TOKENS)) {
-    const tokens = readJson(LEGACY_TOKENS, {});
-    writeJson(TOKENS_PATH, tokens);
+  if (!fs.existsSync(TOKENS_PATH)) {
+    const seed = fs.existsSync(LEGACY_TOKENS) ? LEGACY_TOKENS :
+                 fs.existsSync(EXAMPLE_TOKENS) ? EXAMPLE_TOKENS : null;
+    writeJson(TOKENS_PATH, seed ? readJson(seed, {}) : {});
   }
-  // ensure files exist
-  if (!fs.existsSync(HOSTS_PATH)) writeJson(HOSTS_PATH, []);
-  if (!fs.existsSync(TOKENS_PATH)) writeJson(TOKENS_PATH, {});
 }
 
 export function listHosts() {
@@ -63,12 +57,8 @@ export function upsertHost(host) {
 export function deleteHost(baseUrl) {
   const hosts = listHosts().filter(h => h.baseUrl !== baseUrl);
   writeJson(HOSTS_PATH, hosts);
-  // also remove token
   const tokens = readJson(TOKENS_PATH, {});
-  if (tokens[baseUrl]) {
-    delete tokens[baseUrl];
-    writeJson(TOKENS_PATH, tokens);
-  }
+  if (tokens[baseUrl]) { delete tokens[baseUrl]; writeJson(TOKENS_PATH, tokens); }
 }
 
 export function setToken(baseUrl, token) {
@@ -84,9 +74,8 @@ export function getToken(baseUrl) {
 }
 
 export function tokensSummary() {
-  // for UI mask: { baseUrl: true/false }
   const tokens = readJson(TOKENS_PATH, {});
   const res = {};
-  Object.keys(tokens).forEach(k => res[k] = !!tokens[k]);
+  Object.keys(tokens).forEach(k => { res[k] = !!tokens[k]; });
   return res;
 }
