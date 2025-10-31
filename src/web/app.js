@@ -1,114 +1,94 @@
-function getCookie(name){
-  return document.cookie.split('; ').find(r=>r.startsWith(name+'='))?.split('=')[1] || '';
-}
-async function getJSON(url, opts = {}) {
-  const csrf = getCookie('ucp_csrf');
-  opts.headers = Object.assign({}, opts.headers||{}, { 'X-CSRF-Token': csrf });
-  const res = await fetch(url, opts);
-  const text = await res.text();
-  let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw:text }; }
-  if (!res.ok) {
-    const msg = json.message || json.error || `HTTP ${res.status}`;
-    console.error('API error', { url, status: res.status, body: json });
-    throw new Error(msg);
-  }
+const rows = document.getElementById('rows');
+const statusEl = document.getElementById('status');
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: body ? JSON.stringify(body) : '{}'
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
   return json;
 }
 
-async function refreshAll() {
-  const servers = await getJSON('/api/servers');
-  const g = document.getElementById('grid');
-  g.innerHTML = '';
-  for (const s of servers) g.append(renderServer(s));
-}
-
-function renderServer(s) {
-  const el = document.createElement('div');
-  el.className = 'card';
-  el.innerHTML = `
-    <div class="title">${s.name}</div>
-    <div class="muted mono">${s.baseUrl}</div>
-    <div class="section row">
-      <span class="pill">OS: ${s.status?.system?.osVersion ?? 'n/a'}</span>
-      <span class="pill">Uptime: ${s.status?.system?.uptime ?? 'n/a'}</span>
-      <span class="pill">Docker: ${s.status?.docker?.running ?? '0'}/${s.status?.docker?.total ?? '0'}</span>
-      <span class="pill">VMs: ${s.status?.vms?.running ?? '0'}/${s.status?.vms?.total ?? '0'}</span>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <button onclick="act('${s.baseUrl}','power','wake')">WOL</button>
-      <button onclick="act('${s.baseUrl}','power','reboot')">Reboot</button>
-      <button onclick="act('${s.baseUrl}','power','shutdown')">Shutdown</button>
-      <button onclick="loadDetails('${s.baseUrl}','docker')">Load Containers</button>
-      <button onclick="loadDetails('${s.baseUrl}','vms')">Load VMs</button>
-    </div>
-    <div class="section">
-      <div id="list-${btoa(s.baseUrl)}" class="list"></div>
-    </div>
-  `;
-  return el;
-}
-
-async function act(baseUrl, kind, what) {
-  const res = await getJSON(`/api/host?action=${kind}&base=${encodeURIComponent(baseUrl)}`, {
-    method: 'POST',
-    headers: { 'Content-Type':'application/json' },
-    body: JSON.stringify({ action: what })
-  });
-  alert(`${kind} ${what}: ${res.ok ? 'OK' : 'Failed'}`);
-}
-
-async function loadDetails(baseUrl, type) {
-  const list = document.getElementById(`list-${btoa(baseUrl)}`);
-  list.innerHTML = 'Loading...';
-  const data = await getJSON(`/api/host/${type}?base=${encodeURIComponent(baseUrl)}`);
-  list.innerHTML = '';
-  if (type === 'docker') {
-    for (const c of data) {
-      const row = document.createElement('div');
-      row.className = 'item';
-      row.innerHTML = `
-        <div><b>${c.name}</b><div class="muted mono">${c.image}</div></div>
-        <div class="row">
-          <span class="pill">${c.state}</span>
-          <button onclick="containerAction('${baseUrl}','${c.id}','start')">Start</button>
-          <button onclick="containerAction('${baseUrl}','${c.id}','stop')">Stop</button>
-          <button onclick="containerAction('${baseUrl}','${c.id}','restart')">Restart</button>
-        </div>`;
-      list.append(row);
-    }
-  } else {
-    for (const v of data) {
-      const row = document.createElement('div');
-      row.className = 'item';
-      row.innerHTML = `
-        <div><b>${v.name}</b><div class="muted mono">${v.id}</div></div>
-        <div class="row">
-          <span class="pill">${v.state}</span>
-          <button onclick="vmAction('${baseUrl}','${v.id}','start')">Start</button>
-          <button onclick="vmAction('${baseUrl}','${v.id}','stop')">Stop</button>
-          <button onclick="vmAction('${baseUrl}','${v.id}','reset')">Reset</button>
-        </div>`;
-      list.append(row);
-    }
+async function loadHosts() {
+  const res = await fetch('/api/settings/hosts', { headers: {} });
+  const json = await res.json();
+  rows.innerHTML = '';
+  for (const h of json.hosts) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${h.name || ''}</td>
+      <td>${h.baseUrl || ''}</td>
+      <td>${h.mac || ''}</td>
+      <td>${h.token ? '✔︎' : '—'}</td>
+      <td><button data-test="${h.baseUrl}">Test</button></td>
+    `;
+    rows.appendChild(tr);
   }
-}
-
-async function containerAction(baseUrl, id, action) {
-  const res = await getJSON(`/api/host/docker/action?base=${encodeURIComponent(baseUrl)}`, {
-    method: 'POST',
-    headers: { 'Content-Type':'application/json' },
-    body: JSON.stringify({ id, action })
+  rows.querySelectorAll('button[data-test]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      writeStatus('Testing…');
+      try {
+        const r = await api('/api/settings/test', { baseUrl: btn.dataset.test });
+        writeStatus(`OK: ${r.message}`);
+      } catch (e) {
+        writeStatus(`Error: ${e.message}`);
+      }
+    });
   });
-  alert(`Container ${action}: ${res.ok ? 'OK' : 'Failed'}`);
 }
 
-async function vmAction(baseUrl, id, action) {
-  const res = await getJSON(`/api/host/vm/action?base=${encodeURIComponent(baseUrl)}`, {
-    method: 'POST',
-    headers: { 'Content-Type':'application/json' },
-    body: JSON.stringify({ id, action })
-  });
-  alert(`VM ${action}: ${res.ok ? 'OK' : 'Failed'}`);
-}
+function writeStatus(msg) { statusEl.textContent = msg; }
 
-refreshAll().catch(console.error);
+document.getElementById('saveHost').addEventListener('click', async () => {
+  writeStatus('');
+  const name = document.getElementById('name').value.trim();
+  const base = document.getElementById('base').value.trim();
+  const mac  = document.getElementById('mac').value.trim();
+  try {
+    await api('/api/settings/hosts', { name, baseUrl: base, mac });
+    writeStatus('Saved.');
+    await loadHosts();
+  } catch (e) {
+    writeStatus(`Error: ${e.message}`);
+  }
+});
+
+document.getElementById('setToken').addEventListener('click', async () => {
+  const base = document.getElementById('base').value.trim();
+  const token = prompt('Paste Unraid API key for this host:');
+  if (!token) return;
+  try {
+    await api('/api/settings/token', { baseUrl: base, token });
+    writeStatus('Token saved.');
+    await loadHosts();
+  } catch (e) {
+    writeStatus(`Error: ${e.message}`);
+  }
+});
+
+document.getElementById('testConn').addEventListener('click', async () => {
+  const base = document.getElementById('base').value.trim();
+  try {
+    const r = await api('/api/settings/test', { baseUrl: base });
+    writeStatus(`OK: ${r.message}`);
+  } catch (e) {
+    writeStatus(`Error: ${e.message}`);
+  }
+});
+
+document.getElementById('runProbe').addEventListener('click', async () => {
+  const base = document.getElementById('probeBase').value.trim();
+  const out = document.getElementById('probeOut');
+  out.textContent = 'Running…';
+  try {
+    const r = await api('/api/probe', { baseUrl: base });
+    out.textContent = JSON.stringify(r.data, null, 2);
+  } catch (e) {
+    out.textContent = `Error: ${e.message}`;
+  }
+});
+
+loadHosts().catch(console.error);
