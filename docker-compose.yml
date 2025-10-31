@@ -1,10 +1,25 @@
-version: "3.9"
 services:
-  unraid-dashboard:
-    image: ghcr.io/<you>/unraid-dashboard:latest
-    container_name: unraid-dashboard
-    env_file: [.env]
-    network_mode: host
-    volumes:
-      - ./data:/app/data
+  unraid-control:
+    image: ghcr.io/raghalis/unraid-dashboard:latest
+    container_name: unraid-control
     restart: unless-stopped
+    networks: [ default ]
+    environment:
+      TZ: America/Los_Angeles
+      BASIC_AUTH_USER: admin
+      BASIC_AUTH_PASS: change_me
+      UNRAID_ALLOW_SELF_SIGNED: "true"
+      REQUEST_TIMEOUT_MS: "6000"
+      REQUEST_RETRIES: "2"
+      WOL_BROADCAST: 255.255.255.255
+      WOL_INTERFACE: eth0
+      PORT: "8080"
+    ports:
+      - "9880:8080"
+    volumes:
+      - /mnt/user/appdata/unraid-control/data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
