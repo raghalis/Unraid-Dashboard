@@ -1,52 +1,42 @@
 <!doctype html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="utf-8"/>
-  <title>Unraid Control Panel</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <link rel="stylesheet" href="/css/styles.css"/>
+  <meta charset="utf-8" />
+  <title>Unraid Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#0b1220;color:#e8ecf1}
+    header{padding:16px 20px;background:#0f1629;border-bottom:1px solid #223}
+    h1{margin:0;font-size:18px}
+    .wrap{padding:20px;max-width:1200px;margin:0 auto}
+    .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+    .card{background:#111a33;border:1px solid #223;border-radius:12px;padding:16px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    button{border:1px solid #345;background:#182547;color:#e8ecf1;padding:8px 12px;border-radius:8px;cursor:pointer}
+    button:hover{filter:brightness(1.1)}
+    .pill{display:inline-block;padding:2px 8px;border:1px solid #345;border-radius:999px;background:#16213a}
+    .title{font-weight:700;margin-bottom:8px}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+    .muted{opacity:.75}
+    .section{margin-top:10px}
+    .list{display:flex;flex-direction:column;gap:8px;max-height:260px;overflow:auto}
+    .item{display:flex;justify-content:space-between;gap:8px;align-items:center;background:#0e1a33;border:1px solid #223;padding:8px;border-radius:8px}
+    a.link{color:#9fb6ff;text-decoration:none}
+  </style>
 </head>
 <body>
-  <main class="wrap">
-    <section class="card">
-      <h2>Servers</h2>
-      <table class="tbl" id="tbl">
-        <thead>
-          <tr><th>Name</th><th>Base URL</th><th>MAC</th><th>Token</th><th>Actions</th></tr>
-        </thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </section>
-
-    <section class="card">
-      <h2>Add / Update Server</h2>
-      <div class="grid">
-        <label>Name <input id="name" placeholder="Homeserver1"></label>
-        <label>Base URL <input id="base" placeholder="https://192.168.1.3"></label>
-        <label>MAC (AA:BB:CC:DD:EE:FF) <input id="mac" placeholder="BC:30:5B:E9:60:D9"></label>
-      </div>
-      <div class="row">
-        <button id="saveHost">Save Host</button>
-        <button id="setToken">Set/Update Token</button>
-        <button id="testConn">Test Connection</button>
-      </div>
-      <p class="subtle">
-        Token tip: On Unraid 7+, create an API token with Docker/VM/System permissions (e.g., <em>Users → API Keys</em>), then paste it
-        here. If using self-signed HTTPS, leave “UNRAID_ALLOW_SELF_SIGNED=true” in the container env.
-      </p>
-      <pre id="status" class="status"></pre>
-    </section>
-
-    <section class="card">
-      <h2>Quick Probe</h2>
-      <div class="row">
-        <input id="probeBase" placeholder="https://192.168.1.3" style="flex:1;">
-        <button id="runProbe">Run</button>
-      </div>
-      <pre id="probeOut" class="status"></pre>
-    </section>
-  </main>
-
-  <script src="/js/app.js" type="module"></script>
+  <header>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h1>Unraid Dashboard</h1>
+      <a class="link" href="/settings">Settings</a>
+    </div>
+  </header>
+  <div class="wrap">
+    <div class="row" style="margin-bottom:12px">
+      <button onclick="refreshAll()">Refresh All</button>
+    </div>
+    <div id="grid" class="grid"></div>
+  </div>
+  <script src="app.js"></script>
 </body>
 </html>
