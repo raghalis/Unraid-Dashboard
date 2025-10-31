@@ -1,6 +1,6 @@
 {
-  "name": "unraid-control-panel",
-  "version": "0.1.0",
+  "name": "unraid-dashboard",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "scripts": {
