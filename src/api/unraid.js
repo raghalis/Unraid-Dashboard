@@ -1,154 +1,88 @@
+// src/api/unraid.js
 import fetch from 'node-fetch';
-import https from 'https';
-import { getToken } from '../store/configStore.js';
+import https from 'node:https';
 
-const allowSelfSigned = (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true';
+const logCtx = (logger, msg, ctx = {}, level = 'info') =>
+  logger[level]({ ts: new Date().toISOString(), msg, ctx });
 
-// HTTPS agent honoring self-signed toggle
-const httpsAgent = new https.Agent({ rejectUnauthorized: !allowSelfSigned });
-
-// Choose agent by protocol
-function agentFor(urlString) {
-  const u = new URL(urlString);
-  if (u.protocol === 'https:') return httpsAgent;
-  if (u.protocol === 'http:') return undefined;
-  throw new Error(`Unsupported protocol: ${u.protocol}`);
+function makeAgent(allowSelfSigned) {
+  return allowSelfSigned
+    ? new https.Agent({ rejectUnauthorized: false })
+    : undefined;
 }
 
-// common fetch wrapper with clean errors
-async function doFetch(endpoint, opts) {
+// Map low-level/network errors to human messages
+function humanizeNetErr(err) {
+  const m = String(err && err.message || '').toLowerCase();
+  if (m.includes('self signed certificate')) return 'TLS failed: self-signed certificate (enable self-signed in container settings or use a valid cert)';
+  if (m.includes('unable to verify') || m.includes('certificate')) return 'TLS failed: certificate verification';
+  if (m.includes('getaddrinfo') || m.includes('dns')) return 'DNS error contacting the Unraid host';
+  if (m.includes('connect econnrefused')) return 'Connection refused by the Unraid host';
+  if (m.includes('fetch failed') || m.includes('network')) return 'Network error contacting the Unraid host';
+  if (m.includes('timeout')) return 'Timeout contacting the Unraid host';
+  return null;
+}
+
+export async function gql(logger, { baseUrl, apiKey, query, variables = {}, allowSelfSigned = false, originForCors }) {
+  const url = `${baseUrl.replace(/\/+$/,'')}/graphql`;
+  const agent = makeAgent(allowSelfSigned);
+
+  const headers = {
+    'content-type': 'application/json',
+    'accept': 'application/json'
+  };
+  if (apiKey) headers['x-api-key'] = apiKey;       // per Unraid docs
+  if (originForCors) headers['origin'] = originForCors;
+
+  let res;
   try {
-    const res = await fetch(endpoint, { ...opts, agent: agentFor(endpoint) });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status} from ${endpoint}: ${text || 'no body'}`);
-    }
-    return res;
-  } catch (e) {
-    const msg = String(e?.message || e);
-    if (msg.includes('self-signed certificate')) {
-      throw new Error(`TLS failed (self-signed). Enable UNRAID_ALLOW_SELF_SIGNED=true or use a trusted cert. (${endpoint})`);
-    }
-    if (msg.includes('Protocol "http:" not supported')) {
-      throw new Error(`HTTP URL used where HTTPS expected. Use https://… or adjust reverse proxy.`);
-    }
-    throw new Error(`Request to ${endpoint} failed: ${msg}`);
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query, variables }),
+      agent
+    });
+  } catch (err) {
+    const human = humanizeNetErr(err);
+    const msg = human || `Network error: ${err.message || err}`;
+    logCtx(logger, 'unraid.gql.network_error', { url, err: String(err) }, 'warn');
+    throw new Error(msg);
   }
-}
 
-// Single GraphQL helper
-async function gqlRequest(baseUrl, query, variables = {}) {
-  const token = getToken(baseUrl);
-  if (!token) throw new Error(`No API token configured for ${baseUrl}`);
-  const endpoint = new URL('/graphql', baseUrl).toString();
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch {
+    logCtx(logger, 'unraid.gql.bad_json', { url, status: res.status, body: text.slice(0, 3000) }, 'warn');
+    throw new Error(`Unexpected response from Unraid API (status ${res.status}).`);
+  }
 
-  const res = await doFetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify({ query, variables })
-  });
+  if (!res.ok) {
+    // GraphQL-compatible error body
+    const errMsg = (json.errors && json.errors[0] && json.errors[0].message) || `HTTP ${res.status}`;
+    logCtx(logger, 'unraid.gql.http_error', { url, status: res.status, errors: json.errors }, 'warn');
+    throw new Error(`HTTP ${res.status} from ${url}: ${errMsg}`);
+  }
 
-  const json = await res.json().catch(() => ({}));
   if (json.errors && json.errors.length) {
-    // bubble up schema errors un-mangled
-    throw new Error(`GraphQL: ${JSON.stringify(json.errors)}`);
+    logCtx(logger, 'unraid.gql.graphql_error', { url, errors: json.errors }, 'warn');
+    // surface the first helpful error
+    throw new Error(json.errors.map(e => e.message).join('; '));
   }
+
   return json.data;
 }
 
-/* ---------- Adaptive: try several shapes (schemas vary) ---------- */
-// small utility to try queries in order and return first that works
-async function tryQueries(baseUrl, queries) {
-  let lastErr;
-  for (const q of queries) {
-    try { return await gqlRequest(baseUrl, q); }
-    catch (e) { lastErr = e; }
+// --- Minimal queries that match the public docs schema (safe for "Test") ---
+// See: https://docs.unraid.net/API/how-to-use-the-api/  (info / array / dockerContainers)
+export const TEST_QUERY = `
+  query {
+    info {
+      os { distro release uptime }
+      cpu { brand cores threads }
+    }
+    array { state }
+    dockerContainers { id names state status }
   }
-  throw lastErr;
-}
+`;
 
-// candidates for “host info”
-const Q_SYSTEM_VARIANTS = [
-  // v1 (what we tried first)
-  `query { system { hostname osVersion uptime array { status parityStatus } docker { running total } vms { running total } } }`,
-  // some builds expose server/info instead of system
-  `query { server { hostname version uptime } }`,
-  `query { info { hostname version uptime } }`,
-  // last resort: at least prove auth works by listing counts
-  `query { docker { containers { id } } vms { list { id } } }`
-];
-
-// standard lists
-const Q_DOCKER_LIST = `query { docker { containers { id name state image } } }`;
-const Q_VM_LIST     = `query { vms { list { id name state } } }`;
-
-/* ------------------------------ API ------------------------------ */
-export async function getHostStatus(baseUrl) {
-  try {
-    const data = await tryQueries(baseUrl, Q_SYSTEM_VARIANTS);
-    // normalize to a friendly shape
-    const out = { system: {}, docker: {}, vms: {} };
-
-    // from system/server/info variants
-    if (data.system || data.server || data.info) {
-      const s = data.system || data.server || data.info;
-      out.system.hostname   = s.hostname  || '(unknown)';
-      out.system.osVersion  = s.osVersion || s.version || '(unknown)';
-      out.system.uptime     = s.uptime    || null;
-      out.system.array      = s.array     || null;
-      out.docker.running    = s.docker?.running ?? undefined;
-      out.docker.total      = s.docker?.total   ?? undefined;
-      out.vms.running       = s.vms?.running    ?? undefined;
-      out.vms.total         = s.vms?.total      ?? undefined;
-    }
-
-    // If counts missing, compute via lists
-    if (out.docker.running === undefined || out.docker.total === undefined) {
-      try {
-        const d = await gqlRequest(baseUrl, Q_DOCKER_LIST);
-        const arr = d?.docker?.containers || [];
-        out.docker.total = arr.length;
-        out.docker.running = arr.filter(c => String(c.state).toLowerCase() === 'running').length;
-      } catch {}
-    }
-    if (out.vms.running === undefined || out.vms.total === undefined) {
-      try {
-        const d = await gqlRequest(baseUrl, Q_VM_LIST);
-        const arr = d?.vms?.list || [];
-        out.vms.total = arr.length;
-        out.vms.running = arr.filter(v => String(v.state).toLowerCase() === 'running').length;
-      } catch {}
-    }
-
-    return { ok: true, data: { system: out.system, docker: out.docker, vms: out.vms } };
-  } catch (e) {
-    return { ok: false, error: e.message || String(e) };
-  }
-}
-
-export async function listContainers(baseUrl) {
-  const d = await gqlRequest(baseUrl, Q_DOCKER_LIST);
-  return d.docker.containers;
-}
-export async function listVMs(baseUrl) {
-  const d = await gqlRequest(baseUrl, Q_VM_LIST);
-  return d.vms.list;
-}
-
-// Mutations — keep names generic; adjust if your schema differs
-const M_CONTAINER_ACTION = `mutation($id: ID!, $action: String!) { docker { containerAction(id: $id, action: $action) } }`;
-const M_VM_ACTION        = `mutation($id: ID!, $action: String!) { vm { action(id: $id, action: $action) } }`;
-const M_POWER_ACTION     = `mutation($action: String!) { system { power(action: $action) } }`;
-
-export async function containerAction(baseUrl, id, action) {
-  return gqlRequest(baseUrl, M_CONTAINER_ACTION, { id, action });
-}
-export async function vmAction(baseUrl, id, action) {
-  return gqlRequest(baseUrl, M_VM_ACTION, { id, action });
-}
-export async function powerAction(baseUrl, action) {
-  return gqlRequest(baseUrl, M_POWER_ACTION, { action }); // "reboot" | "shutdown"
-}
+// You can extend these with guarded/feature-detected queries later.
