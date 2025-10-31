@@ -5,8 +5,14 @@ async function getJSON(url, opts = {}) {
   const csrf = getCookie('ucp_csrf');
   opts.headers = Object.assign({}, opts.headers||{}, { 'X-CSRF-Token': csrf });
   const res = await fetch(url, opts);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const text = await res.text();
+  let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw:text }; }
+  if (!res.ok) {
+    const msg = json.message || json.error || `HTTP ${res.status}`;
+    console.error('API error', { url, status: res.status, body: json });
+    throw new Error(msg);
+  }
+  return json;
 }
 
 async function refreshAll() {
