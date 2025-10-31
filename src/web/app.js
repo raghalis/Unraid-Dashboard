@@ -31,19 +31,16 @@ function renderServer(s) {
     <div class="section row">
       <span class="pill">OS: ${s.status?.system?.osVersion ?? 'n/a'}</span>
       <span class="pill">Uptime: ${s.status?.system?.uptime ?? 'n/a'}</span>
+      <span class="pill">Array: ${s.status?.system?.array?.status ?? 'n/a'}</span>
       <span class="pill">Docker: ${s.status?.docker?.running ?? '0'}/${s.status?.docker?.total ?? '0'}</span>
       <span class="pill">VMs: ${s.status?.vms?.running ?? '0'}/${s.status?.vms?.total ?? '0'}</span>
     </div>
     <div class="row" style="margin-top:8px">
       <button onclick="act('${s.baseUrl}','power','wake')">WOL</button>
-      <button onclick="act('${s.baseUrl}','power','reboot')">Reboot</button>
-      <button onclick="act('${s.baseUrl}','power','shutdown')">Shutdown</button>
       <button onclick="loadDetails('${s.baseUrl}','docker')">Load Containers</button>
       <button onclick="loadDetails('${s.baseUrl}','vms')">Load VMs</button>
     </div>
-    <div class="section">
-      <div id="list-${btoa(s.baseUrl)}" class="list"></div>
-    </div>
+    <div class="section"><div id="list-${btoa(s.baseUrl)}" class="list"></div></div>
   `;
   return el;
 }
@@ -59,7 +56,7 @@ async function act(baseUrl, kind, what) {
 
 async function loadDetails(baseUrl, type) {
   const list = document.getElementById(`list-${btoa(baseUrl)}`);
-  list.innerHTML = 'Loading...';
+  list.textContent = 'Loading…';
   if (type === 'docker') {
     const data = await getJSON(`/api/host/docker?base=${encodeURIComponent(baseUrl)}`);
     list.innerHTML = '';
@@ -79,7 +76,7 @@ async function loadDetails(baseUrl, type) {
   } else {
     const data = await getJSON(`/api/host/vms?base=${encodeURIComponent(baseUrl)}`);
     list.innerHTML = '';
-    if (!data.length) { list.textContent = 'VM listing not implemented for this Unraid schema yet.'; return; }
+    if (!data.length) { list.textContent = 'No VMs or VM API not available on this host.'; return; }
     for (const v of data) {
       const row = document.createElement('div');
       row.className = 'item';
@@ -89,6 +86,7 @@ async function loadDetails(baseUrl, type) {
           <span class="pill">${v.state}</span>
           <button onclick="vmAction('${baseUrl}','${v.id}','start')">Start</button>
           <button onclick="vmAction('${baseUrl}','${v.id}','stop')">Stop</button>
+          <button onclick="vmAction('${baseUrl}','${v.id}','reboot')">Reboot</button>
           <button onclick="vmAction('${baseUrl}','${v.id}','reset')">Reset</button>
         </div>`;
       list.append(row);
