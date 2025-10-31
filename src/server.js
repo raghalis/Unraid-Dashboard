@@ -16,6 +16,12 @@ import {
   setToken, tokensSummary
 } from './store/configStore.js';
 
+// If self-signed is allowed, also relax Node's global TLS check (helps
+// if a dependency doesn't pass our agent through correctly)
+if ((process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true') {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
 /* ------------------------- basic logger ------------------------- */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = '/app/data';
@@ -246,8 +252,14 @@ app.get('/api/settings/test', async (req, res) => {
   try {
     const r = await getHostStatus(base);
     if (!r.ok) {
-      warn('settings.test.failed', { base, err: r.error });
-      return fail(res, 502, 'Connection failed. Verify URL/cert/token, then try again.', r.error);
+      warn('settings.test.failed', {
+        base,
+        allowSelfSigned: (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false'),
+        err: r.error
+      });
+      return fail(res, 502, r.error.includes('self-signed')
+        ? 'TLS failed: self-signed certificate. Enable UNRAID_ALLOW_SELF_SIGNED or use a trusted cert.'
+        : r.error);
     }
     info('settings.test.ok', { base });
     ok(res, { system: r.data?.system || null });
