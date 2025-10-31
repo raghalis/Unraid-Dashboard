@@ -56,7 +56,6 @@ app.use(async (req, res, next) => {
 });
 
 /* -------------------------------- CSRF ---------------------------------- */
-// Double-submit cookie approach; readable cookie so front-end can echo it in header
 const CSRF_NAME = 'ucp_csrf';
 const CSRF = process.env.CSRF_SECRET || crypto.randomBytes(16).toString('hex');
 function getCookie(req, name) {
@@ -82,7 +81,10 @@ app.use((req, res, next) => {
 app.use('/', express.static(path.join(__dirname, 'web')));
 
 /* ---------------------------- Helpers (HTTP) ---------------------------- */
-const OK  = (res, payload)=>res.json(Object.assign({ ok:true }, payload||{}));
+// Smart OK: arrays are returned as-is (so the client gets an array); objects get ok:true wrapper
+const OK  = (res, payload) => Array.isArray(payload)
+  ? res.json(payload)
+  : res.json(Object.assign({ ok:true }, payload || {}));
 const FAIL= (res, status, message, details)=>res.status(status).json({ ok:false, error:message, message, details });
 
 /* --------------------------------- API ---------------------------------- */
@@ -95,32 +97,32 @@ app.get('/api/servers', async (_req, res) => {
              status: st.ok ? st.data : null, error: st.ok ? null : st.error };
   }));
   info('servers.list', { count: out.length });
-  OK(res, out);
+  OK(res, out); // returns an array
 });
 
 // Containers
 app.get('/api/host/docker', async (req, res) => {
   const base = String(req.query.base || '');
-  try { const items = await listContainers(base); OK(res, items); }
+  try { const items = await listContainers(base); OK(res, items); } // array
   catch (e) { error('docker.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list containers. See logs for details.'); }
 });
 app.post('/api/host/docker/action', async (req, res) => {
   const base = String(req.query.base || '');
   const { id, action } = req.body || {};
-  try { await containerAction(base, id, action); OK(res); }
+  try { await containerAction(base, id, action); OK(res, {}); }
   catch (e) { error('docker.action', { base, id, action, err: String(e) }); FAIL(res, 502, `Container ${action} failed: ${e.message}`); }
 });
 
 // VMs
 app.get('/api/host/vms', async (req, res) => {
   const base = String(req.query.base || '');
-  try { const items = await listVMs(base); OK(res, items); }
+  try { const items = await listVMs(base); OK(res, items); } // array
   catch (e) { error('vms.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list VMs. See logs for details.'); }
 });
 app.post('/api/host/vm/action', async (req, res) => {
   const base = String(req.query.base || '');
   const { id, action } = req.body || {};
-  try { await vmAction(base, id, action); OK(res); }
+  try { await vmAction(base, id, action); OK(res, {}); }
   catch (e) { error('vm.action', { base, id, action, err: String(e) }); FAIL(res, 502, `VM ${action} failed: ${e.message}`); }
 });
 
@@ -133,8 +135,11 @@ app.post('/api/host', async (req, res) => {
   if (!host) return FAIL(res, 404, 'Unknown host. Check Base URL.');
   try {
     if (kind === 'power') {
-      if (action === 'wake') { await sendWol(host.mac, process.env.WOL_BROADCAST || '255.255.255.255', process.env.WOL_INTERFACE || 'eth0'); info('power.wake', { base, mac: host.mac }); return OK(res); }
-      // API doesn’t expose system power in this schema:
+      if (action === 'wake') {
+        await sendWol(host.mac, process.env.WOL_BROADCAST || '255.255.255.255', process.env.WOL_INTERFACE || 'eth0');
+        info('power.wake', { base, mac: host.mac });
+        return OK(res, {});
+      }
       const msg = 'Shutdown/Reboot are not available via API in this schema (WOL only).';
       warn('power.unsupported', { base }); return FAIL(res, 400, msg);
     }
@@ -147,26 +152,31 @@ app.post('/api/host', async (req, res) => {
 
 // Settings
 app.get('/api/settings/hosts', (_req,res) => {
-  const hosts = listHosts(); const tokens = tokensSummary();
-  OK(res, hosts.map(h => ({ ...h, tokenSet: !!tokens[h.baseUrl] })));
+  const hosts = listHosts();
+  const tokens = tokensSummary();
+  const arr = hosts.map(h => ({ ...h, tokenSet: !!tokens[h.baseUrl] }));
+  OK(res, arr); // array
 });
 app.post('/api/settings/host', (req,res) => {
-  try { const saved = upsertHost(req.body || {}); OK(res, { host: { ...saved, tokenSet: false } }); info('host.upsert', { base: saved.baseUrl }); }
+  try { const saved = upsertHost(req.body || {}); info('host.upsert', { base: saved.baseUrl }); OK(res, { host: { ...saved, tokenSet: false } }); }
   catch (e) { FAIL(res, 400, e.message || 'Invalid host data.'); }
 });
 app.delete('/api/settings/host', (req,res) => {
-  try { deleteHost(String(req.query.base || '')); OK(res); }
+  try { deleteHost(String(req.query.base || '')); OK(res, {}); }
   catch { FAIL(res, 400, 'Failed to delete host.'); }
 });
 app.post('/api/settings/token', (req,res) => {
   const { baseUrl, token } = req.body || {};
-  try { setToken(baseUrl, token); OK(res); info('token.set', { base: baseUrl }); }
+  try { setToken(baseUrl, token); info('token.set', { base: baseUrl }); OK(res, {}); }
   catch (e) { FAIL(res, 400, e.message || 'Failed to save token.'); }
 });
 app.get('/api/settings/test', async (req,res) => {
   const base = String(req.query.base || '');
   const r = await getHostStatus(base);
-  if (!r.ok) { warn('settings.test.failed', { base, allowSelfSigned: (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false'), err: r.error }); return FAIL(res, 502, r.error); }
+  if (!r.ok) {
+    warn('settings.test.failed', { base, allowSelfSigned: (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false'), err: r.error });
+    return FAIL(res, 502, r.error);
+  }
   OK(res, { system: r.data?.system || null });
 });
 
