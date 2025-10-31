@@ -1,4 +1,9 @@
-async function getJSON(url, opts) {
+function getCookie(name){
+  return document.cookie.split('; ').find(r=>r.startsWith(name+'='))?.split('=')[1] || '';
+}
+async function getJSON(url, opts = {}) {
+  const csrf = getCookie('ucp_csrf');
+  opts.headers = Object.assign({}, opts.headers||{}, { 'X-CSRF-Token': csrf });
   const res = await fetch(url, opts);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -37,11 +42,10 @@ function renderServer(s) {
 }
 
 async function act(baseUrl, kind, what) {
-  const body = JSON.stringify({ action: what });
   const res = await getJSON(`/api/host?action=${kind}&base=${encodeURIComponent(baseUrl)}`, {
     method: 'POST',
     headers: { 'Content-Type':'application/json' },
-    body
+    body: JSON.stringify({ action: what })
   });
   alert(`${kind} ${what}: ${res.ok ? 'OK' : 'Failed'}`);
 }
