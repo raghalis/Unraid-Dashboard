@@ -39,10 +39,9 @@
 
   <div class="card">
     <h3 style="margin-top:0">Add / Update Server</h3>
-    <label>Name</label><input id="name" placeholder="Unraid-A" />
-    <label>Base URL</label><input id="base" placeholder="https://unraid-a.local" oninput="baseHint()" />
-    <div id="base-hint" class="muted" style="margin-top:4px"></div>
-    <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="AA:BB:CC:DD:EE:FF" />
+    <label>Name</label><input id="name" placeholder="Homeserver1" />
+    <label>Base URL</label><input id="base" placeholder="https://192.168.1.3" />
+    <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="BC:30:5B:E9:60:D9" />
     <div class="row" style="margin-top:12px">
       <button onclick="saveHost()">Save Host</button>
       <button onclick="setTok()">Set/Update Token</button>
@@ -58,15 +57,6 @@
 </div>
 
 <script>
-function baseHint(){
-  const v = document.getElementById('base').value.trim();
-  const el = document.getElementById('base-hint');
-  if (v.startsWith('http://')) {
-    el.textContent = 'Note: HTTP detected. That’s fine on trusted LAN, but HTTPS is recommended. If HTTPS uses self-signed certs, keep UNRAID_ALLOW_SELF_SIGNED=true.';
-  } else {
-    el.textContent = '';
-  }
-}
 function getCookie(name){
   return document.cookie.split('; ').find(r=>r.startsWith(name+'='))?.split('=')[1] || '';
 }
@@ -133,7 +123,7 @@ async function setTok(){
   try {
     await j('/api/settings/token', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, token }) });
     const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl));
-    msg(r.ok ? ('Token saved. Connection OK: ' + (r.system?.hostname || 'success')) : ('Token saved, but test failed.'));
+    msg(r.ok ? ('Token saved. Connection OK.') : ('Token saved, but test failed.'));
     await load();
   } catch(e){ msg(e.message); }
 }
@@ -142,7 +132,7 @@ async function testHost(){
   if (!baseUrl) { msg('Enter Base URL first.'); return; }
   try {
     const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl));
-    msg(r.ok ? ('OK: ' + (r.system?.hostname || 'success')) : ('Failed: see logs.'));
+    msg(r.ok ? 'OK.' : 'Failed. See logs.');
   } catch(e){ msg(e.message); }
 }
 async function delHost(baseEnc){
