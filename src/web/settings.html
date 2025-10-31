@@ -1,151 +1,79 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Settings · Unraid Dashboard</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#0b1220;color:#e8ecf1}
-    header{padding:16px 20px;background:#0f1629;border-bottom:1px solid #223}
-    h1{margin:0;font-size:18px}
-    .wrap{padding:20px;max-width:900px;margin:0 auto}
-    .card{background:#111a33;border:1px solid #223;border-radius:12px;padding:16px;margin-bottom:16px}
-    label{display:block;margin:8px 0 4px}
-    input{width:100%;padding:8px;border-radius:8px;border:1px solid #345;background:#182547;color:#e8ecf1}
-    button{border:1px solid #345;background:#182547;color:#e8ecf1;padding:8px 12px;border-radius:8px;cursor:pointer}
-    button:hover{filter:brightness(1.08)}
-    table{width:100%;border-collapse:collapse}
-    td,th{padding:8px;border-bottom:1px solid #223;vertical-align:middle}
-    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    .muted{opacity:.75}
-    .link{color:#9fb6ff;text-decoration:none}
-    .pw-wrap{position:relative}
-    .pw-wrap button{position:absolute;right:6px;top:6px;padding:6px 8px}
-  </style>
+  <title>Unraid Control — Settings</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-<header>
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <h1>Settings</h1>
-    <a class="link" href="/">← Back</a>
-  </div>
-</header>
-<div class="wrap">
-  <div class="card">
-    <h3 style="margin:0 0 10px">Servers</h3>
-    <table id="hosts">
-      <thead><tr><th>Name</th><th>Base URL</th><th>MAC</th><th>Token</th><th>Actions</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
+  <header class="topbar">
+    <h1>Unraid Control</h1>
+    <nav>
+      <a class="nav" href="/">Dashboard</a>
+      <a class="nav active" href="/settings">Settings</a>
+    </nav>
+    <div class="version" id="appVersion"></div>
+  </header>
 
-  <div class="card">
-    <h3 style="margin-top:0">Add / Update Server</h3>
-    <label>Name</label><input id="name" placeholder="Homeserver1" />
-    <label>Base URL</label><input id="base" placeholder="https://192.168.1.3" />
-    <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="BC:30:5B:E9:60:D9" />
+  <main class="container">
 
-    <label>API Token</label>
-    <div class="pw-wrap">
-      <input id="token" type="password" placeholder="Paste Unraid API token (Users → API Tokens)" autocomplete="new-password" />
-      <button type="button" onclick="toggleToken()">Show</button>
-    </div>
+    <section class="card">
+      <h2>Add / Update Server</h2>
 
-    <div class="row" style="margin-top:12px">
-      <button onclick="saveHost()">Save Host</button>
-      <button onclick="saveToken()">Save Token</button>
-      <button onclick="testHost()">Test Connection</button>
-    </div>
-    <div class="muted" style="margin-top:8px">
-      Token tip: create an API token with Docker/VM/System permissions (Users → API Tokens),
-      paste it here. For self-signed HTTPS, keep <code>UNRAID_ALLOW_SELF_SIGNED=true</code>.
-    </div>
-    <div id="msg" class="muted" style="margin-top:8px"></div>
-  </div>
-</div>
+      <div class="grid">
+        <label>Name
+          <input id="name" type="text" placeholder="Homeserver1" autocomplete="off" />
+        </label>
 
-<script>
-function getCookie(name){
-  return document.cookie.split('; ').find(r=>r.startsWith(name+'='))?.split('=')[1] || '';
-}
-async function j(url, opts={}) {
-  const csrf = getCookie('ucp_csrf');
-  opts.headers = Object.assign({}, { 'X-CSRF-Token': csrf }, opts.headers || {});
-  const res = await fetch(url, opts);
-  const text = await res.text();
-  let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw:text }; }
-  if (!res.ok) { const msg = json.message || json.error || `HTTP ${res.status}`; console.error('API error', { url, status: res.status, body: json }); throw new Error(msg); }
-  return json;
-}
-function msg(s){ document.getElementById('msg').textContent = s; }
-function toggleToken(){
-  const el = document.getElementById('token');
-  const btn = el.nextElementSibling;
-  el.type = (el.type === 'password') ? 'text' : 'password';
-  btn.textContent = (el.type === 'password') ? 'Show' : 'Hide';
-}
+        <label>Base URL
+          <input id="baseUrl" type="text" placeholder="https://192.168.1.3" autocomplete="off" />
+        </label>
 
-async function load() {
-  try {
-    const data = await j('/api/settings/hosts'); // <-- now returns an ARRAY
-    const tb = document.querySelector('#hosts tbody');
-    tb.innerHTML = '';
-    for (const h of data) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${h.name}</td>
-        <td class="muted">${h.baseUrl}</td>
-        <td>${h.mac}</td>
-        <td>${h.tokenSet ? '•••• set' : '<span class="muted">not set</span>'}</td>
-        <td class="row">
-          <button onclick="prefill('${encodeURIComponent(h.name)}','${encodeURIComponent(h.baseUrl)}','${encodeURIComponent(h.mac)}')">Edit</button>
-          <button onclick="delHost('${encodeURIComponent(h.baseUrl)}')">Delete</button>
-        </td>`;
-      tb.appendChild(tr);
-    }
-  } catch(e) { console.error('load() failed', e); msg('Failed to load hosts: ' + e.message); }
-}
+        <label>MAC (AA:BB:CC:DD:EE:FF)
+          <input id="mac" type="text" placeholder="BC:30:5B:E9:60:D9" autocomplete="off" />
+        </label>
 
-function prefill(n,b,m){
-  document.getElementById('name').value = decodeURIComponent(n);
-  document.getElementById('base').value = decodeURIComponent(b);
-  document.getElementById('mac').value  = decodeURIComponent(m);
-  document.getElementById('token').value = '';
-}
+        <label>API Token
+          <div class="password">
+            <input id="token" type="password" placeholder="Paste Unraid API token" autocomplete="off" />
+            <button id="toggleToken" class="btn ghost" type="button">Show</button>
+          </div>
+        </label>
+      </div>
 
-async function saveHost(){
-  const body = {
-    name: document.getElementById('name').value.trim(),
-    baseUrl: document.getElementById('base').value.trim(),
-    mac: document.getElementById('mac').value.trim()
-  };
-  try { await j('/api/settings/host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); msg('Host saved.'); await load(); }
-  catch(e){ msg(e.message); }
-}
+      <div class="btn-row">
+        <button id="saveHost" class="btn primary">Save Host</button>
+        <span class="hint">
+          Token tip: create an API token with Docker/VM/System permissions (Users → API Tokens).  
+          For self-signed HTTPS, keep <code>UNRAID_ALLOW_SELF_SIGNED=true</code>.
+        </span>
+      </div>
 
-async function saveToken(){
-  const baseUrl = document.getElementById('base').value.trim();
-  const token   = document.getElementById('token').value.trim();
-  if (!baseUrl) { msg('Enter Base URL first.'); return; }
-  if (!token) { msg('Paste an API token.'); return; }
-  try { await j('/api/settings/token', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, token }) }); msg('Token saved.'); await load(); }
-  catch(e){ msg(e.message); }
-}
+      <div id="resp" class="resp muted"></div>
+    </section>
 
-async function testHost(){
-  const baseUrl = document.getElementById('base').value.trim();
-  if (!baseUrl) { msg('Enter Base URL first.'); return; }
-  try { const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl)); msg('Connection OK.'); }
-  catch(e){ msg(e.message); }
-}
+    <section class="card">
+      <h2>Saved Hosts</h2>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Base URL</th>
+            <th>MAC</th>
+            <th>Token</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="hostsBody"></tbody>
+      </table>
+      <div id="hostsEmpty" class="muted" style="display:none">No hosts saved yet.</div>
+    </section>
 
-async function delHost(baseEnc){
-  if (!confirm('Delete this host?')) return;
-  try { await j('/api/settings/host?base=' + baseEnc, { method:'DELETE' }); await load(); msg('Host deleted.'); }
-  catch(e){ msg(e.message); }
-}
+  </main>
 
-load().catch(e => msg(e.message));
-</script>
+  <script src="/js/common.js"></script>
+  <script src="/js/settings.js"></script>
 </body>
 </html>
