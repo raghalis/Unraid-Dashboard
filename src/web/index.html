@@ -1,42 +1,43 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Unraid Dashboard</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#0b1220;color:#e8ecf1}
-    header{padding:16px 20px;background:#0f1629;border-bottom:1px solid #223}
-    h1{margin:0;font-size:18px}
-    .wrap{padding:20px;max-width:1200px;margin:0 auto}
-    .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
-    .card{background:#111a33;border:1px solid #223;border-radius:12px;padding:16px}
-    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    button{border:1px solid #345;background:#182547;color:#e8ecf1;padding:8px 12px;border-radius:8px;cursor:pointer}
-    button:hover{filter:brightness(1.08)}
-    .pill{display:inline-block;padding:2px 8px;border:1px solid #345;border-radius:999px;background:#16213a}
-    .title{font-weight:700;margin-bottom:8px}
-    .mono{font-family: ui-monospace, Menlo, Consolas, "Courier New", monospace}
-    .muted{opacity:.75}
-    .section{margin-top:10px}
-    .list{display:flex;flex-direction:column;gap:8px;max-height:260px;overflow:auto}
-    .item{display:flex;justify-content:space-between;gap:8px;align-items:center;background:#0e1a33;border:1px solid #223;padding:8px;border-radius:8px}
-    a.link{color:#9fb6ff;text-decoration:none}
-  </style>
+  <title>Unraid Control — Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h1>Unraid Dashboard</h1>
-      <a class="link" href="/settings">Settings</a>
-    </div>
+  <header class="topbar">
+    <h1>Unraid Control</h1>
+    <nav>
+      <a class="nav" href="/">Dashboard</a>
+      <a class="nav" href="/settings">Settings</a>
+    </nav>
+    <div class="version" id="appVersion"></div>
   </header>
-  <div class="wrap">
-    <div class="row" style="margin-bottom:12px">
-      <button onclick="refreshAll()">Refresh All</button>
-    </div>
-    <div id="grid" class="grid"></div>
-  </div>
-  <script src="app.js"></script>
+
+  <main class="container">
+    <section class="card">
+      <h2>Servers</h2>
+      <div id="serversEmpty" class="muted" style="display:none">No servers yet. Add one in <a href="/settings">Settings</a>.</div>
+      <table class="table" id="serversTable">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Base URL</th>
+            <th>Array</th>
+            <th>Docker</th>
+            <th>VMs</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="serversBody"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/js/common.js"></script>
+  <script src="/js/dashboard.js"></script>
 </body>
 </html>
