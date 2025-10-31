@@ -1,88 +1,126 @@
-// src/api/unraid.js
 import fetch from 'node-fetch';
-import https from 'node:https';
+import https from 'https';
+import { getToken } from '../store/configStore.js';
 
-const logCtx = (logger, msg, ctx = {}, level = 'info') =>
-  logger[level]({ ts: new Date().toISOString(), msg, ctx });
+/** Honor self-signed toggle */
+const allowSelfSigned = (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true';
+const httpsAgent = new https.Agent({ rejectUnauthorized: !allowSelfSigned });
 
-function makeAgent(allowSelfSigned) {
-  return allowSelfSigned
-    ? new https.Agent({ rejectUnauthorized: false })
-    : undefined;
+function agentFor(urlString) {
+  const u = new URL(urlString);
+  if (u.protocol === 'https:') return httpsAgent;
+  if (u.protocol === 'http:') return undefined;
+  throw new Error(`Unsupported protocol: ${u.protocol}`);
 }
 
-// Map low-level/network errors to human messages
-function humanizeNetErr(err) {
-  const m = String(err && err.message || '').toLowerCase();
-  if (m.includes('self signed certificate')) return 'TLS failed: self-signed certificate (enable self-signed in container settings or use a valid cert)';
-  if (m.includes('unable to verify') || m.includes('certificate')) return 'TLS failed: certificate verification';
-  if (m.includes('getaddrinfo') || m.includes('dns')) return 'DNS error contacting the Unraid host';
-  if (m.includes('connect econnrefused')) return 'Connection refused by the Unraid host';
-  if (m.includes('fetch failed') || m.includes('network')) return 'Network error contacting the Unraid host';
-  if (m.includes('timeout')) return 'Timeout contacting the Unraid host';
+function humanizeNetErr(e) {
+  const m = (e?.message || '').toLowerCase();
+  if (m.includes('self signed')) return 'TLS failed: self-signed certificate. Enable UNRAID_ALLOW_SELF_SIGNED=true or use a trusted cert.';
+  if (m.includes('unauthorized') || m.includes('401')) return 'Unauthorized. Check the Unraid API key.';
+  if (m.includes('econnrefused')) return 'Connection refused by the Unraid host.';
+  if (m.includes('getaddrinfo') || m.includes('dns')) return 'DNS error contacting the Unraid host.';
+  if (m.includes('timeout')) return 'Timeout contacting the Unraid host.';
   return null;
 }
 
-export async function gql(logger, { baseUrl, apiKey, query, variables = {}, allowSelfSigned = false, originForCors }) {
-  const url = `${baseUrl.replace(/\/+$/,'')}/graphql`;
-  const agent = makeAgent(allowSelfSigned);
-
-  const headers = {
-    'content-type': 'application/json',
-    'accept': 'application/json'
-  };
-  if (apiKey) headers['x-api-key'] = apiKey;       // per Unraid docs
-  if (originForCors) headers['origin'] = originForCors;
-
+async function doFetchJSON(endpoint, opts) {
   let res;
   try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ query, variables }),
-      agent
-    });
-  } catch (err) {
-    const human = humanizeNetErr(err);
-    const msg = human || `Network error: ${err.message || err}`;
-    logCtx(logger, 'unraid.gql.network_error', { url, err: String(err) }, 'warn');
-    throw new Error(msg);
+    res = await fetch(endpoint, { ...opts, agent: agentFor(endpoint) });
+  } catch (e) {
+    throw new Error(humanizeNetErr(e) || `Network error: ${e.message || e}`);
   }
-
   const text = await res.text();
-  let json;
-  try { json = JSON.parse(text); } catch {
-    logCtx(logger, 'unraid.gql.bad_json', { url, status: res.status, body: text.slice(0, 3000) }, 'warn');
-    throw new Error(`Unexpected response from Unraid API (status ${res.status}).`);
-  }
+  let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
+  return { ok: res.ok, status: res.status, json };
+}
 
-  if (!res.ok) {
-    // GraphQL-compatible error body
-    const errMsg = (json.errors && json.errors[0] && json.errors[0].message) || `HTTP ${res.status}`;
-    logCtx(logger, 'unraid.gql.http_error', { url, status: res.status, errors: json.errors }, 'warn');
-    throw new Error(`HTTP ${res.status} from ${url}: ${errMsg}`);
-  }
+/** GraphQL POST with x-api-key */
+async function gqlRequest(baseUrl, query, variables = {}) {
+  const token = getToken(baseUrl);
+  if (!token) throw new Error(`No API token configured for ${baseUrl}`);
+  const endpoint = new URL('/graphql', baseUrl).toString();
 
-  if (json.errors && json.errors.length) {
-    logCtx(logger, 'unraid.gql.graphql_error', { url, errors: json.errors }, 'warn');
-    // surface the first helpful error
+  const { ok, status, json } = await doFetchJSON(endpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'accept': 'application/json',
+      'x-api-key': token   // per Unraid API docs
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  if (!ok) {
+    const msg = (json?.errors && json.errors[0]?.message) || `HTTP ${status}`;
+    throw new Error(`HTTP ${status} from ${endpoint}: ${msg}`);
+  }
+  if (json?.errors?.length) {
     throw new Error(json.errors.map(e => e.message).join('; '));
   }
-
   return json.data;
 }
 
-// --- Minimal queries that match the public docs schema (safe for "Test") ---
-// See: https://docs.unraid.net/API/how-to-use-the-api/  (info / array / dockerContainers)
-export const TEST_QUERY = `
+/** Queries that match Unraid docs */
+const Q_TEST = `
   query {
-    info {
-      os { distro release uptime }
-      cpu { brand cores threads }
-    }
+    info { os { distro release uptime } cpu { brand cores threads } }
     array { state }
-    dockerContainers { id names state status }
+    dockerContainers { id names state status autoStart }
   }
 `;
 
-// You can extend these with guarded/feature-detected queries later.
+export async function getHostStatus(baseUrl) {
+  try {
+    const data = await gqlRequest(baseUrl, Q_TEST);
+
+    // Normalize to what the UI expects
+    const sys = {
+      hostname: data?.info?.os?.distro || '(Unraid)',
+      osVersion: data?.info?.os?.release || '',
+      uptime: data?.info?.os?.uptime ?? null,
+      array: { status: data?.array?.state || '' }
+    };
+
+    // derive counts
+    const conts = data?.dockerContainers || [];
+    const running = conts.filter(c => String(c.state).toLowerCase() === 'running').length;
+    const docker = { running, total: conts.length };
+
+    // VMs: not in the public sample schema; return n/a for now
+    const vms = { running: 0, total: 0 };
+
+    return { ok: true, data: { system: sys, docker, vms } };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
+export async function listContainers(baseUrl) {
+  const data = await gqlRequest(baseUrl, `
+    query { dockerContainers { id names state status autoStart } }
+  `);
+  // Map to fit UI (name/image fields)
+  return (data?.dockerContainers || []).map(c => ({
+    id: c.id,
+    name: (Array.isArray(c.names) && c.names[0]) || c.id,
+    image: c.status || '',
+    state: c.state
+  }));
+}
+
+// VM support varies by version; for now return empty list gracefully.
+export async function listVMs(_baseUrl) {
+  return [];
+}
+
+// Mutations: these are placeholders; wire up once schema for actions is confirmed.
+export async function containerAction(_baseUrl, _id, _action) {
+  throw new Error('Container actions not implemented for this Unraid API schema yet.');
+}
+export async function vmAction(_baseUrl, _id, _action) {
+  throw new Error('VM actions not implemented for this Unraid API schema yet.');
+}
+export async function powerAction(_baseUrl, _action) {
+  throw new Error('Power actions not implemented for this Unraid API schema yet.');
+}
