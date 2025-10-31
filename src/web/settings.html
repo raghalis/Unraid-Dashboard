@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Settings · Unraid Control Panel</title>
+  <title>Settings · Unraid Dashboard</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#0b1220;color:#e8ecf1}
@@ -17,46 +17,58 @@
     table{width:100%;border-collapse:collapse}
     td,th{padding:8px;border-bottom:1px solid #223;vertical-align:middle}
     .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    .pill{display:inline-block;padding:2px 8px;border:1px solid #345;border-radius:999px;background:#16213a}
     .muted{opacity:.75}
+    .link{color:#9fb6ff;text-decoration:none}
   </style>
 </head>
 <body>
-  <header>
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h1>Settings</h1>
-      <a href="/" style="color:#9fb6ff;text-decoration:none">← Back</a>
-    </div>
-  </header>
-  <div class="wrap">
-    <div class="card">
-      <h3 style="margin-top:0">Servers</h3>
-      <table id="hosts"><thead>
-        <tr><th>Name</th><th>Base URL</th><th>MAC</th><th>Token</th><th>Actions</th></tr>
-      </thead><tbody></tbody></table>
-    </div>
-
-    <div class="card">
-      <h3 style="margin-top:0">Add / Update Server</h3>
-      <label>Name</label><input id="name" placeholder="Unraid-A" />
-      <label>Base URL</label><input id="base" placeholder="https://unraid-a.local" />
-      <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="AA:BB:CC:DD:EE:FF" />
-      <div class="row" style="margin-top:12px">
-        <button onclick="saveHost()">Save Host</button>
-        <button onclick="setTok()">Set/Update Token</button>
-        <button onclick="testHost()">Test Connection</button>
-      </div>
-      <div id="msg" class="muted" style="margin-top:8px"></div>
-    </div>
+<header>
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h1>Settings</h1>
+    <a class="link" href="/">← Back</a>
+  </div>
+</header>
+<div class="wrap">
+  <div class="card">
+    <h3 style="margin:0 0 10px">Servers</h3>
+    <table id="hosts">
+      <thead><tr><th>Name</th><th>Base URL</th><th>MAC</th><th>Token</th><th>Actions</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
 
+  <div class="card">
+    <h3 style="margin-top:0">Add / Update Server</h3>
+    <label>Name</label><input id="name" placeholder="Unraid-A" />
+    <label>Base URL</label><input id="base" placeholder="https://unraid-a.local" />
+    <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="AA:BB:CC:DD:EE:FF" />
+    <div class="row" style="margin-top:12px">
+      <button onclick="saveHost()">Save Host</button>
+      <button onclick="setTok()">Set/Update Token</button>
+      <button onclick="testHost()">Test Connection</button>
+    </div>
+    <div class="muted" style="margin-top:8px">
+      Token tip: On Unraid 7+, create an API token with Docker/VM/System permissions
+      (e.g., <em>Users → API Tokens</em>), then paste it here. If using self-signed HTTPS,
+      leave “UNRAID_ALLOW_SELF_SIGNED=true” in the container env.
+    </div>
+    <div id="msg" class="muted" style="margin-top:8px"></div>
+  </div>
+</div>
+
 <script>
+function getCookie(name){
+  return document.cookie.split('; ').find(r=>r.startsWith(name+'='))?.split('=')[1] || '';
+}
 async function j(url, opts={}) {
-  opts.headers = Object.assign({}, opts.headers||{}, { 'X-CSRF-Token': '' }); // server injects token in response; not needed on GET
+  const csrf = getCookie('ucp_csrf');
+  opts.headers = Object.assign({}, { 'X-CSRF-Token': csrf }, opts.headers || {});
   const res = await fetch(url, opts);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+function msg(s){ document.getElementById('msg').textContent = s; }
+
 async function load() {
   const data = await j('/api/settings/hosts');
   const tb = document.querySelector('#hosts tbody');
@@ -75,50 +87,45 @@ async function load() {
     tb.appendChild(tr);
   }
 }
-function prefill(n,b,m) {
+function prefill(n,b,m){
   document.getElementById('name').value = decodeURIComponent(n);
   document.getElementById('base').value = decodeURIComponent(b);
   document.getElementById('mac').value  = decodeURIComponent(m);
 }
-function msg(s) { document.getElementById('msg').textContent = s; }
-async function saveHost() {
+async function saveHost(){
   const body = {
     name: document.getElementById('name').value.trim(),
     baseUrl: document.getElementById('base').value.trim(),
     mac: document.getElementById('mac').value.trim()
   };
-  try {
-    await j('/api/settings/host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-    msg('Host saved.');
-    await load();
-  } catch (e) { msg('Error: ' + e.message); }
+  try { await j('/api/settings/host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        msg('Host saved.'); await load(); }
+  catch(e){ msg('Error: ' + e.message); }
 }
-async function setTok() {
+async function setTok(){
   const baseUrl = document.getElementById('base').value.trim();
   if (!baseUrl) { msg('Enter Base URL first.'); return; }
-  const token = prompt('Enter API token for ' + baseUrl + ':', '');
+  const token = prompt('Paste API token for ' + baseUrl + ':', '');
   if (token === null) return;
   try {
     await j('/api/settings/token', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, token }) });
-    msg('Token updated.');
+    const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl));
+    msg(r.ok ? ('Token saved. Connection OK: ' + (r.system?.hostname || 'success')) : ('Token saved, but test failed: ' + (r.error || 'unknown')));
     await load();
-  } catch (e) { msg('Error: ' + e.message); }
+  } catch(e){ msg('Error: ' + e.message); }
 }
-async function testHost() {
-  const base = encodeURIComponent(document.getElementById('base').value.trim());
-  if (!base) { msg('Enter Base URL first.'); return; }
+async function testHost(){
+  const baseUrl = document.getElementById('base').value.trim();
+  if (!baseUrl) { msg('Enter Base URL first.'); return; }
   try {
-    const r = await j('/api/settings/test?base=' + base);
-    msg('OK: ' + JSON.stringify(r.system || {}));
-  } catch (e) { msg('FAILED: ' + e.message); }
+    const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl));
+    msg(r.ok ? ('OK: ' + (r.system?.hostname || 'success')) : ('Failed: ' + (r.error || 'unknown')));
+  } catch(e){ msg('Error: ' + e.message); }
 }
-async function delHost(baseEnc) {
+async function delHost(baseEnc){
   if (!confirm('Delete this host?')) return;
-  try {
-    await j('/api/settings/host?base=' + baseEnc, { method:'DELETE' });
-    await load();
-    msg('Host deleted.');
-  } catch (e) { msg('Error: ' + e.message); }
+  try { await j('/api/settings/host?base=' + baseEnc, { method:'DELETE' }); await load(); msg('Host deleted.'); }
+  catch(e){ msg('Error: ' + e.message); }
 }
 load().catch(e => msg(e.message));
 </script>
