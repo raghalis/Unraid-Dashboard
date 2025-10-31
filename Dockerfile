@@ -1,15 +1,26 @@
-# Multi-arch friendly; swap to node:18-bullseye-slim if arm/v7 issues
-FROM node:20-bookworm-slim
+# syntax=docker/dockerfile:1.7
 
+FROM node:20-alpine AS base
 WORKDIR /app
-ENV NODE_ENV=production
 
-COPY package*.json ./
-RUN npm ci --omit=dev || npm install --omit=dev
+# Accept the app version from CI (no "v" prefix)
+ARG APP_VERSION=0.0.0
+ENV APP_VERSION=${APP_VERSION}
 
-COPY src ./src
-COPY .env.example ./
-COPY README.md ./
+# Write a version file that server can read even if envs are scrubbed by proxy
+RUN echo -n "${APP_VERSION}" > /app/version.txt
+
+# Install deps separately for better caching
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
+
+# Copy app
+COPY . .
+
+# (optional) if you have a client build step, do it here:
+# RUN npm run build
 
 EXPOSE 8080
-CMD ["npm","start"]
+ENV NODE_ENV=production
+
+CMD ["npm", "start"]
