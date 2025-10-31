@@ -31,7 +31,8 @@ function renderServer(s) {
     <div class="section row">
       <span class="pill">OS: ${s.status?.system?.osVersion ?? 'n/a'}</span>
       <span class="pill">Uptime: ${s.status?.system?.uptime ?? 'n/a'}</span>
-      <span class="pill">Array: ${s.status?.system?.array?.status ?? 'unknown'}</span>
+      <span class="pill">Docker: ${s.status?.docker?.running ?? '0'}/${s.status?.docker?.total ?? '0'}</span>
+      <span class="pill">VMs: ${s.status?.vms?.running ?? '0'}/${s.status?.vms?.total ?? '0'}</span>
     </div>
     <div class="row" style="margin-top:8px">
       <button onclick="act('${s.baseUrl}','power','wake')">WOL</button>
