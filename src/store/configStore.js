@@ -5,15 +5,13 @@ const DATA_DIR = '/app/data';
 const HOSTS_PATH = path.join(DATA_DIR, 'hosts.json');
 const TOKENS_PATH = path.join(DATA_DIR, 'tokens.json');
 
-// legacy (one-time import if present and data missing)
+// legacy/seed (imported once if data missing)
 const LEGACY_HOSTS = '/app/config/hosts.json';
 const LEGACY_TOKENS = '/run/secrets/unraid_tokens.json';
 const EXAMPLE_HOSTS = '/app/examples/config.hosts.json';
 const EXAMPLE_TOKENS = '/app/examples/secrets.tokens.json';
 
-function ensureDir() {
-  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
-}
+function ensureDir() { try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {} }
 function readJson(p, fb) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fb; } }
 function writeJson(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2)); }
 
@@ -34,9 +32,7 @@ export function initStore() {
   }
 }
 
-export function listHosts() {
-  return readJson(HOSTS_PATH, []);
-}
+export function listHosts() { return readJson(HOSTS_PATH, []); }
 
 export function upsertHost(host) {
   const hosts = listHosts();
@@ -55,8 +51,7 @@ export function upsertHost(host) {
 }
 
 export function deleteHost(baseUrl) {
-  const hosts = listHosts().filter(h => h.baseUrl !== baseUrl);
-  writeJson(HOSTS_PATH, hosts);
+  writeJson(HOSTS_PATH, listHosts().filter(h => h.baseUrl !== baseUrl));
   const tokens = readJson(TOKENS_PATH, {});
   if (tokens[baseUrl]) { delete tokens[baseUrl]; writeJson(TOKENS_PATH, tokens); }
 }
@@ -68,14 +63,10 @@ export function setToken(baseUrl, token) {
   writeJson(TOKENS_PATH, tokens);
 }
 
-export function getToken(baseUrl) {
-  const tokens = readJson(TOKENS_PATH, {});
-  return tokens[baseUrl] || '';
-}
+export function getToken(baseUrl) { return readJson(TOKENS_PATH, {})[baseUrl] || ''; }
 
 export function tokensSummary() {
-  const tokens = readJson(TOKENS_PATH, {});
-  const res = {};
+  const tokens = readJson(TOKENS_PATH, {}); const res = {};
   Object.keys(tokens).forEach(k => { res[k] = !!tokens[k]; });
   return res;
 }
