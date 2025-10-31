@@ -10,20 +10,20 @@ import {
   getHostStatus, listContainers, listVMs,
   containerAction, vmAction, powerAction
 } from './api/unraid.js';
-
 import {
   initStore, listHosts, upsertHost, deleteHost,
   setToken, tokensSummary
 } from './store/configStore.js';
 
-// If self-signed is allowed, also relax Node's global TLS check (helps
-// if a dependency doesn't pass our agent through correctly)
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+
+/* ----------------- Optional global TLS relax (self-signed) ----------------- */
 if ((process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true') {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
 
-/* ------------------------- basic logger ------------------------- */
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/* ------------------------------ Logging ----------------------------------- */
 const DATA_DIR = '/app/data';
 const LOG_PATH = path.join(DATA_DIR, 'app.log');
 function ensureDir(p){ try{ fs.mkdirSync(p,{recursive:true}); }catch{} }
@@ -36,16 +36,15 @@ function log(level, msg, ctx){
   console.log(line);
   try { fs.appendFileSync(LOG_PATH, line + '\n'); } catch {}
 }
-function info(msg, ctx){ log('info', msg, ctx); }
-function warn(msg, ctx){ log('warn', msg, ctx); }
-function error(msg, ctx){ log('error', msg, ctx); }
+const info = (m,c)=>log('info',m,c);
+const warn = (m,c)=>log('warn',m,c);
+const error= (m,c)=>log('error',m,c);
 
-/* ------------------------- express app ------------------------- */
-const app = express();
+/* ----------------------------- Middleware --------------------------------- */
 app.use(express.json());
 app.use(nocache());
 
-/* ------------------------- Basic Auth -------------------------- */
+// Basic Auth (if set)
 const USER = process.env.BASIC_AUTH_USER || '';
 const PASS = process.env.BASIC_AUTH_PASS || '';
 app.use(async (req, res, next) => {
@@ -59,70 +58,50 @@ app.use(async (req, res, next) => {
   next();
 });
 
-/* --------------------------- CSRF ------------------------------ */
-/**
- * Double-submit cookie: we set a NON-HttpOnly cookie so the browser
- * can read it and mirror to X-CSRF-Token. (My earlier HttpOnly cookie
- * made that impossible—hence your “Bad CSRF”.)
- */
+// CSRF (double-submit cookie; not HttpOnly so client can mirror in header)
 const CSRF_NAME = 'ucp_csrf';
 const CSRF = process.env.CSRF_SECRET || crypto.randomBytes(16).toString('hex');
-
 function getCookie(req, name) {
   const raw = req.headers.cookie || '';
   const m = raw.match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
   return m ? decodeURIComponent(m[1]) : '';
 }
-
 app.use((req, res, next) => {
   const secure = (req.protocol === 'https') ? '; Secure' : '';
-  // NOTE: no HttpOnly, by design (so client JS can read it)
   res.setHeader('Set-Cookie', `${CSRF_NAME}=${encodeURIComponent(CSRF)}; Path=/; SameSite=Lax${secure}`);
-
   if (req.method !== 'GET' && req.path.startsWith('/api/')) {
     const cookieTok = getCookie(req, CSRF_NAME);
     const headerTok = req.headers['x-csrf-token'] || '';
-    const ok = cookieTok && headerTok && cookieTok === headerTok;
-    if (!ok) {
-      warn('CSRF validation failed', {
-        path: req.path,
-        hasCookie: !!cookieTok,
-        hasHeader: !!headerTok
-      });
+    if (!(cookieTok && headerTok && cookieTok === headerTok)) {
+      warn('csrf.fail', { path: req.path, hasCookie: !!cookieTok, hasHeader: !!headerTok });
       return res.status(403).json({
-        error: 'Bad CSRF',
-        message: 'Security check failed. Please refresh the page and try again.'
+        ok:false,
+        error:'Bad CSRF',
+        message:'Security check failed. Refresh the page and try again.'
       });
     }
   }
   next();
 });
 
-/* ------------------------- Store init -------------------------- */
+/* ------------------------------ Store/UI ---------------------------------- */
 initStore();
-
-/* ------------------------- Static UI --------------------------- */
 app.use('/', express.static(path.join(__dirname, 'web')));
 
-/* --------------------- response helpers ------------------------ */
-function ok(res, payload){ return res.json(Object.assign({ ok: true }, payload||{})); }
-function fail(res, status, message, details){
-  const body = { ok:false, error: message, message, details: details || undefined };
-  return res.status(status).json(body);
-}
+/* ------------------------- helpers for responses -------------------------- */
+const ok   = (res, payload)=>res.json(Object.assign({ ok:true }, payload||{}));
+const fail = (res, status, message, details)=>res.status(status).json({ ok:false, error:message, message, details });
 
-/* ------------------------- API routes -------------------------- */
-app.get('/api/servers', async (req, res) => {
+/* --------------------------------- API ------------------------------------ */
+app.get('/api/servers', async (_req, res) => {
   const hosts = listHosts();
   const result = await Promise.all(hosts.map(async h => {
     const status = await getHostStatus(h.baseUrl);
-    return {
-      name: h.name, baseUrl: h.baseUrl, mac: h.mac,
-      status: status.ok ? status.data : null,
-      error: status.ok ? null : status.error
-    };
+    return { name:h.name, baseUrl:h.baseUrl, mac:h.mac,
+             status: status.ok ? status.data : null,
+             error:  status.ok ? null : status.error };
   }));
-  info('servers.list', { count: result.length });
+  info('settings.hosts.list', { count: result.length });
   ok(res, result);
 });
 
@@ -203,10 +182,9 @@ app.post('/api/host', async (req, res) => {
   }
 });
 
-/* ----------------------- Settings API -------------------------- */
-app.get('/api/settings/hosts', (req, res) => {
-  const hosts = listHosts();
-  const tokens = tokensSummary();
+/* --------------------------- Settings API ------------------------------- */
+app.get('/api/settings/hosts', (_req, res) => {
+  const hosts = listHosts(); const tokens = tokensSummary();
   info('settings.hosts.list', { count: hosts.length });
   ok(res, hosts.map(h => ({ ...h, tokenSet: !!tokens[h.baseUrl] })));
 });
@@ -253,13 +231,9 @@ app.get('/api/settings/test', async (req, res) => {
     const r = await getHostStatus(base);
     if (!r.ok) {
       warn('settings.test.failed', {
-        base,
-        allowSelfSigned: (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false'),
-        err: r.error
+        base, allowSelfSigned: (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false'), err: r.error
       });
-      return fail(res, 502, r.error.includes('self-signed')
-        ? 'TLS failed: self-signed certificate. Enable UNRAID_ALLOW_SELF_SIGNED or use a trusted cert.'
-        : r.error);
+      return fail(res, 502, r.error);
     }
     info('settings.test.ok', { base });
     ok(res, { system: r.data?.system || null });
@@ -269,12 +243,12 @@ app.get('/api/settings/test', async (req, res) => {
   }
 });
 
-/* ----------------------- Settings Page ------------------------- */
-app.get('/settings', (req, res) => {
+/* ----------------------------- Settings UI ------------------------------ */
+app.get('/settings', (_req, res) => {
   res.sendFile(path.join(__dirname, 'web', 'settings.html'));
 });
 
-/* -------------------------- Start ------------------------------ */
+/* -------------------------------- Start --------------------------------- */
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   info('server.start', { port: PORT });
