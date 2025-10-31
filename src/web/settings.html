@@ -19,6 +19,8 @@
     .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
     .muted{opacity:.75}
     .link{color:#9fb6ff;text-decoration:none}
+    .pw-wrap{position:relative}
+    .pw-wrap button{position:absolute;right:6px;top:6px;padding:6px 8px}
   </style>
 </head>
 <body>
@@ -42,9 +44,16 @@
     <label>Name</label><input id="name" placeholder="Homeserver1" />
     <label>Base URL</label><input id="base" placeholder="https://192.168.1.3" />
     <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="BC:30:5B:E9:60:D9" />
+
+    <label>API Token</label>
+    <div class="pw-wrap">
+      <input id="token" type="password" placeholder="Paste Unraid API token (Users → API Tokens)" autocomplete="new-password" />
+      <button type="button" onclick="toggleToken()">Show</button>
+    </div>
+
     <div class="row" style="margin-top:12px">
       <button onclick="saveHost()">Save Host</button>
-      <button onclick="setTok()">Set/Update Token</button>
+      <button onclick="saveToken()">Save Token</button>
       <button onclick="testHost()">Test Connection</button>
     </div>
     <div class="muted" style="margin-top:8px">
@@ -69,10 +78,16 @@ async function j(url, opts={}) {
   return json;
 }
 function msg(s){ document.getElementById('msg').textContent = s; }
+function toggleToken(){
+  const el = document.getElementById('token');
+  const btn = el.nextElementSibling;
+  el.type = (el.type === 'password') ? 'text' : 'password';
+  btn.textContent = (el.type === 'password') ? 'Show' : 'Hide';
+}
 
 async function load() {
   try {
-    const data = await j('/api/settings/hosts');
+    const data = await j('/api/settings/hosts'); // <-- now returns an ARRAY
     const tb = document.querySelector('#hosts tbody');
     tb.innerHTML = '';
     for (const h of data) {
@@ -90,11 +105,14 @@ async function load() {
     }
   } catch(e) { console.error('load() failed', e); msg('Failed to load hosts: ' + e.message); }
 }
+
 function prefill(n,b,m){
   document.getElementById('name').value = decodeURIComponent(n);
   document.getElementById('base').value = decodeURIComponent(b);
   document.getElementById('mac').value  = decodeURIComponent(m);
+  document.getElementById('token').value = '';
 }
+
 async function saveHost(){
   const body = {
     name: document.getElementById('name').value.trim(),
@@ -104,25 +122,29 @@ async function saveHost(){
   try { await j('/api/settings/host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); msg('Host saved.'); await load(); }
   catch(e){ msg(e.message); }
 }
-async function setTok(){
+
+async function saveToken(){
   const baseUrl = document.getElementById('base').value.trim();
+  const token   = document.getElementById('token').value.trim();
   if (!baseUrl) { msg('Enter Base URL first.'); return; }
-  const token = prompt('Paste API token for ' + baseUrl + ':', '');
-  if (token === null) return;
-  try { await j('/api/settings/token', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, token }) }); const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl)); msg(r.ok ? ('Token saved. Connection OK.') : ('Token saved, but test failed.')); await load(); }
+  if (!token) { msg('Paste an API token.'); return; }
+  try { await j('/api/settings/token', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ baseUrl, token }) }); msg('Token saved.'); await load(); }
   catch(e){ msg(e.message); }
 }
+
 async function testHost(){
   const baseUrl = document.getElementById('base').value.trim();
   if (!baseUrl) { msg('Enter Base URL first.'); return; }
-  try { const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl)); msg(r.ok ? 'OK.' : 'Failed. See logs.'); }
+  try { const r = await j('/api/settings/test?base=' + encodeURIComponent(baseUrl)); msg('Connection OK.'); }
   catch(e){ msg(e.message); }
 }
+
 async function delHost(baseEnc){
   if (!confirm('Delete this host?')) return;
   try { await j('/api/settings/host?base=' + baseEnc, { method:'DELETE' }); await load(); msg('Host deleted.'); }
   catch(e){ msg(e.message); }
 }
+
 load().catch(e => msg(e.message));
 </script>
 </body>
