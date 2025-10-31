@@ -1,18 +1,10 @@
 version: "3.9"
-
 services:
-  unraid-control:
-    build:
-      context: .
-      # (Optional) for Pi 3 you can force:
-      # platform: linux/arm/v7
-    container_name: unraid-control
-    env_file:
-      - .env
-    # Host networking makes broadcast WOL trivial
+  unraid-dashboard:
+    image: ghcr.io/<you>/unraid-dashboard:latest
+    container_name: unraid-dashboard
+    env_file: [.env]
     network_mode: host
     volumes:
-      - ./config:/app/config:ro
-      - ./secrets:/run/secrets:ro
       - ./data:/app/data
     restart: unless-stopped
