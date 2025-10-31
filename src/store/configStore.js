@@ -5,68 +5,56 @@ const DATA_DIR = '/app/data';
 const HOSTS_PATH = path.join(DATA_DIR, 'hosts.json');
 const TOKENS_PATH = path.join(DATA_DIR, 'tokens.json');
 
-// legacy/seed (imported once if data missing)
-const LEGACY_HOSTS = '/app/config/hosts.json';
-const LEGACY_TOKENS = '/run/secrets/unraid_tokens.json';
-const EXAMPLE_HOSTS = '/app/examples/config.hosts.json';
-const EXAMPLE_TOKENS = '/app/examples/secrets.tokens.json';
-
-function ensureDir() { try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {} }
-function readJson(p, fb) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fb; } }
-function writeJson(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2)); }
-
-function isMac(s) { return /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(s); }
-function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
+let hosts = [];
+let tokens = {}; // { baseUrl: token }
 
 export function initStore() {
-  ensureDir();
-  if (!fs.existsSync(HOSTS_PATH)) {
-    const seed = fs.existsSync(LEGACY_HOSTS) ? LEGACY_HOSTS :
-                 fs.existsSync(EXAMPLE_HOSTS) ? EXAMPLE_HOSTS : null;
-    writeJson(HOSTS_PATH, seed ? readJson(seed, []) : []);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (fs.existsSync(HOSTS_PATH)) {
+    try { hosts = JSON.parse(fs.readFileSync(HOSTS_PATH, 'utf8')); }
+    catch { hosts = []; }
   }
-  if (!fs.existsSync(TOKENS_PATH)) {
-    const seed = fs.existsSync(LEGACY_TOKENS) ? LEGACY_TOKENS :
-                 fs.existsSync(EXAMPLE_TOKENS) ? EXAMPLE_TOKENS : null;
-    writeJson(TOKENS_PATH, seed ? readJson(seed, {}) : {});
+  if (fs.existsSync(TOKENS_PATH)) {
+    try { tokens = JSON.parse(fs.readFileSync(TOKENS_PATH, 'utf8')); }
+    catch { tokens = {}; }
   }
 }
 
-export function listHosts() { return readJson(HOSTS_PATH, []); }
+function persist() {
+  fs.writeFileSync(HOSTS_PATH, JSON.stringify(hosts, null, 2));
+  fs.writeFileSync(TOKENS_PATH, JSON.stringify(tokens, null, 2));
+}
 
-export function upsertHost(host) {
-  const hosts = listHosts();
-  const h = {
-    name: String(host.name || '').trim(),
-    baseUrl: String(host.baseUrl || '').trim(),
-    mac: String(host.mac || '').trim().toUpperCase()
-  };
-  if (!h.name || !isUrl(h.baseUrl) || !isMac(h.mac)) {
-    throw new Error('Invalid host: need name, valid URL, and MAC (AA:BB:CC:DD:EE:FF).');
-  }
-  const i = hosts.findIndex(x => x.baseUrl === h.baseUrl);
-  if (i >= 0) hosts[i] = h; else hosts.push(h);
-  writeJson(HOSTS_PATH, hosts);
-  return h;
+export function listHosts() { return hosts.slice(); }
+
+export function upsertHost(h) {
+  const name = String(h.name || '').trim();
+  const baseUrl = String(h.baseUrl || '').trim().replace(/\/+$/,'');
+  const mac = String(h.mac || '').trim();
+
+  if (!name) throw new Error('Missing name.');
+  if (!/^https?:\/\/[^ ]+$/i.test(baseUrl)) throw new Error('Base URL must start with http:// or https://');
+  if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) throw new Error('MAC must be AA:BB:CC:DD:EE:FF');
+
+  const i = hosts.findIndex(x => x.baseUrl === baseUrl);
+  const obj = { name, baseUrl, mac };
+  if (i >= 0) hosts[i] = obj; else hosts.push(obj);
+  persist();
+  return obj;
 }
 
 export function deleteHost(baseUrl) {
-  writeJson(HOSTS_PATH, listHosts().filter(h => h.baseUrl !== baseUrl));
-  const tokens = readJson(TOKENS_PATH, {});
-  if (tokens[baseUrl]) { delete tokens[baseUrl]; writeJson(TOKENS_PATH, tokens); }
+  const before = hosts.length;
+  hosts = hosts.filter(h => h.baseUrl !== baseUrl);
+  if (hosts.length === before) throw new Error('Host not found.');
+  persist();
 }
 
 export function setToken(baseUrl, token) {
-  if (!isUrl(baseUrl) || !token) throw new Error('Invalid token request.');
-  const tokens = readJson(TOKENS_PATH, {});
-  tokens[baseUrl] = token;
-  writeJson(TOKENS_PATH, tokens);
+  if (!/^https?:\/\/[^ ]+$/i.test(baseUrl)) throw new Error('Invalid Base URL.');
+  if (!String(token || '').trim()) throw new Error('Token is empty.');
+  tokens[baseUrl] = token.trim();
+  persist();
 }
-
-export function getToken(baseUrl) { return readJson(TOKENS_PATH, {})[baseUrl] || ''; }
-
-export function tokensSummary() {
-  const tokens = readJson(TOKENS_PATH, {}); const res = {};
-  Object.keys(tokens).forEach(k => { res[k] = !!tokens[k]; });
-  return res;
-}
+export function getToken(baseUrl) { return tokens[baseUrl]; }
+export function tokensSummary() { return { ...tokens }; }
