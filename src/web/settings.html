@@ -39,10 +39,9 @@
 
   <div class="card">
     <h3 style="margin-top:0">Add / Update Server</h3>
-    <label>Base URL</label>
-    <input id="base" placeholder="https://unraid-a.local" oninput="baseHint()" />
+    <label>Name</label><input id="name" placeholder="Unraid-A" />
+    <label>Base URL</label><input id="base" placeholder="https://unraid-a.local" oninput="baseHint()" />
     <div id="base-hint" class="muted" style="margin-top:4px"></div>
-    <label>Base URL</label><input id="base" placeholder="https://unraid-a.local" />
     <label>MAC (AA:BB:CC:DD:EE:FF)</label><input id="mac" placeholder="AA:BB:CC:DD:EE:FF" />
     <div class="row" style="margin-top:12px">
       <button onclick="saveHost()">Save Host</button>
@@ -59,25 +58,24 @@
 </div>
 
 <script>
-function getCookie(name){
-  return document.cookie.split('; ').find(r=>r.startsWith(name+'='))?.split('=')[1] || '';
-}
 function baseHint(){
   const v = document.getElementById('base').value.trim();
   const el = document.getElementById('base-hint');
   if (v.startsWith('http://')) {
-    el.textContent = 'Note: HTTP detected. That’s fine on trusted LAN, but token auth and some features expect HTTPS. If you use HTTPS with a self-signed cert, keep UNRAID_ALLOW_SELF_SIGNED=true.';
+    el.textContent = 'Note: HTTP detected. That’s fine on trusted LAN, but HTTPS is recommended. If HTTPS uses self-signed certs, keep UNRAID_ALLOW_SELF_SIGNED=true.';
   } else {
     el.textContent = '';
   }
+}
+function getCookie(name){
+  return document.cookie.split('; ').find(r=>r.startsWith(name+'='))?.split('=')[1] || '';
 }
 async function j(url, opts={}) {
   const csrf = getCookie('ucp_csrf');
   opts.headers = Object.assign({}, { 'X-CSRF-Token': csrf }, opts.headers || {});
   const res = await fetch(url, opts);
-  let text = await res.text();
-  let json;
-  try { json = text ? JSON.parse(text) : {}; } catch { json = { raw:text }; }
+  const text = await res.text();
+  let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw:text }; }
   if (!res.ok) {
     const msg = json.message || json.error || `HTTP ${res.status}`;
     console.error('API error', { url, status: res.status, body: json });
