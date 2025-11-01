@@ -1,137 +1,82 @@
-const nameEl    = $('#name');
-const baseEl    = $('#baseUrl');
-const macEl     = $('#mac');
-const tokenEl   = $('#token');
-const oldBaseEl = $('#editOldBase');
-const respEl    = $('#resp');
-const hostsBody = $('#hostsBody');
-const hostsEmpty= $('#hostsEmpty');
+import { q, val, setVal, toast } from './common.js';
 
-$('#toggleToken').addEventListener('click', () => {
-  tokenEl.type = tokenEl.type === 'password' ? 'text' : 'password';
-  $('#toggleToken').textContent = tokenEl.type === 'password' ? 'Show' : 'Hide';
-});
-
-function setBadge(el, ok, msg){
-  el.className = 'resp ' + (ok ? 'ok' : 'err');
-  el.textContent = msg;
+async function refreshHosts(){
+  const r = await fetch('/api/settings/hosts'); const arr = await r.json();
+  const tbody = q('#hosts-body'); tbody.innerHTML = '';
+  arr.forEach(h=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${h.name}</td>
+      <td>${h.baseUrl}</td>
+      <td>${h.mac}</td>
+      <td>${h.tokenSet ? '<span class="pill ok">set</span>' : '<span class="pill bad">not set</span>'}</td>
+      <td class="act">
+        <button class="btn sm" data-act="edit">Edit</button>
+        <button class="btn sm" data-act="test">Test</button>
+        <button class="btn sm danger" data-act="del">Delete</button>
+      </td>`;
+    tr.querySelector('[data-act="test"]').onclick = async()=>{
+      const r = await fetch(`/api/settings/test?base=${encodeURIComponent(h.baseUrl)}`);
+      const j = await r.json();
+      j.ok ? toast('Test OK','ok') : toast(j.message || 'Test failed','bad');
+      refreshHosts();
+    };
+    tr.querySelector('[data-act="del"]').onclick = async()=>{
+      await fetch(`/api/settings/host?base=${encodeURIComponent(h.baseUrl)}`, { method:'DELETE' });
+      toast('Deleted','ok'); refreshHosts();
+    };
+    tr.querySelector('[data-act="edit"]').onclick = ()=>{
+      setVal('#name', h.name); setVal('#baseUrl', h.baseUrl);
+      setVal('#mac', h.mac); setVal('#oldBaseUrl', h.baseUrl);
+      q('#name').focus();
+    };
+    tbody.appendChild(tr);
+  });
 }
 
-/* Load saved hosts */
-async function loadHosts(){
-  hostsBody.innerHTML = '';
-  try{
-    const rows = await jsonFetch('/api/settings/hosts');
-    if (!rows.length){ hostsEmpty.style.display = ''; return; }
-    hostsEmpty.style.display = 'none';
-    for (const h of rows){
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td data-label="Name">${h.name}</td>
-        <td data-label="Base URL"><a href="${h.baseUrl}" target="_blank" rel="noopener">${h.baseUrl}</a></td>
-        <td data-label="MAC">${h.mac}</td>
-        <td data-label="Token">${h.tokenSet ? '<span class="pill green">set</span>' : '<span class="pill">none</span>'}</td>
-        <td data-label="Actions" class="row-actions">
-          <button class="btn ghost test" data-base="${h.baseUrl}">Test</button>
-          <button class="btn ghost edit" data-base="${h.baseUrl}" data-name="${h.name}" data-mac="${h.mac}">Edit</button>
-          <button class="btn ghost danger del" data-base="${h.baseUrl}">Delete</button>
-        </td>
-      `;
-      hostsBody.appendChild(tr);
-    }
-  } catch(e){
-    hostsBody.innerHTML = `<tr><td colspan="5" class="muted">Failed to load hosts: ${e.message}</td></tr>`;
-  }
+async function loadAppSettings(){
+  const r = await fetch('/api/app'); const j = await r.json();
+  setVal('#refreshSeconds', j?.settings?.refreshSeconds ?? 30);
+  setVal('#logLevel', j?.settings?.logLevel ?? 'info');
+  q('#debugHttp').checked = !!j?.settings?.debugHttp;
+  q('#allowSelfSigned').checked = !!j?.settings?.allowSelfSigned;
 }
 
-/* Per-row actions */
-hostsBody.addEventListener('click', async (ev) => {
-  const btn = ev.target.closest('button'); if (!btn) return;
-  const base = btn.dataset.base;
-
-  if (btn.classList.contains('test')){
-    btn.disabled = true; const txt = btn.textContent; btn.textContent = 'Testing…';
-    try { await jsonFetch(`/api/settings/test?base=${encodeURIComponent(base)}`); setBadge(respEl,true,`✅ Connection OK: ${base}`); }
-    catch(e){ setBadge(respEl,false,`❌ ${e.message}`); }
-    finally { btn.disabled=false; btn.textContent=txt; }
-  }
-
-  if (btn.classList.contains('edit')){
-    nameEl.value = btn.dataset.name || '';
-    baseEl.value = base || '';
-    macEl.value  = btn.dataset.mac || '';
-    oldBaseEl.value = base || '';
-    $('#cancelEdit').style.display = '';
-    nameEl.focus();
-  }
-
-  if (btn.classList.contains('del')){
-    if (!confirm(`Delete host ${base}?`)) return;
-    btn.disabled = true;
-    try { await jsonFetch(`/api/settings/host?base=${encodeURIComponent(base)}`, { method:'DELETE' }); await loadHosts(); setBadge(respEl,true,`🗑️ Deleted ${base}`); }
-    catch(e){ setBadge(respEl,false,`❌ ${e.message}`); }
-    finally { btn.disabled=false; }
-  }
-});
-
-/* Cancel edit */
-$('#cancelEdit').addEventListener('click', () => {
-  nameEl.value = baseEl.value = macEl.value = tokenEl.value = '';
-  oldBaseEl.value = '';
-  $('#cancelEdit').style.display = 'none';
-  respEl.textContent = '';
-  respEl.className = 'resp muted';
-});
-
-/* Transactional Save Host */
-$('#saveHost').addEventListener('click', async () => {
+async function saveAppSettings(){
   const body = {
-    name:  nameEl.value.trim(),
-    baseUrl: baseEl.value.trim(),
-    mac:   macEl.value.trim(),
-    token: tokenEl.value.trim(),
-    oldBaseUrl: oldBaseEl.value.trim() || undefined
+    refreshSeconds: Number(val('#refreshSeconds')),
+    logLevel: val('#logLevel'),
+    debugHttp: q('#debugHttp').checked,
+    allowSelfSigned: q('#allowSelfSigned').checked
   };
-  if (!body.name || !body.baseUrl || !body.mac || !body.token) {
-    setBadge(respEl,false,'Please fill in Name, Base URL, MAC, and Token.'); return;
-  }
-  $('#saveHost').disabled = true; setBadge(respEl,true,'Validating…');
-  try{
-    await jsonFetch('/api/settings/host', { method:'POST', body: JSON.stringify(body) });
-    // success
-    nameEl.value = baseEl.value = macEl.value = tokenEl.value = '';
-    oldBaseEl.value = '';
-    $('#cancelEdit').style.display = 'none';
-    await loadHosts();
-    setBadge(respEl,true,'✅ Host saved and validated.');
-  } catch(e){
-    setBadge(respEl,false,`❌ ${e.message}`);
-  } finally { $('#saveHost').disabled = false; }
-});
-
-/* ------------------------------- App Settings --------------------------- */
-async function loadApp(){
-  try {
-    const r = await jsonFetch('/api/app');
-    const s = r.settings || {};
-    $('#appLogLevel').value = s.logLevel || 'info';
-    $('#appDebugHttp').value = String(!!s.debugHttp);
-    $('#appSelfSigned').value = String(!!s.allowSelfSigned);
-  } catch {}
+  const r = await fetch('/api/app', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
+  const j = await r.json();
+  j.ok ? toast('Settings saved','ok') : toast(j.message || 'Save failed','bad');
 }
-$('#saveApp').addEventListener('click', async ()=>{
-  const body = {
-    logLevel: $('#appLogLevel').value,
-    debugHttp: $('#appDebugHttp').value === 'true',
-    allowSelfSigned: $('#appSelfSigned').value === 'true'
-  };
-  const badge = $('#appResp');
-  try {
-    await jsonFetch('/api/app', { method:'POST', body: JSON.stringify(body) });
-    setBadge(badge, true, '✅ Saved. Changes apply immediately.');
-  } catch(e) {
-    setBadge(badge, false, `❌ ${e.message}`);
-  }
-});
 
-document.addEventListener('DOMContentLoaded', async ()=>{ await loadHosts(); await loadApp(); });
+async function saveHost(ev){
+  ev.preventDefault();
+  const payload = {
+    name: val('#name').trim(),
+    baseUrl: val('#baseUrl').trim(),
+    mac: val('#mac').trim(),
+    token: val('#token').trim(),
+    oldBaseUrl: val('#oldBaseUrl').trim() || undefined
+  };
+  const r = await fetch('/api/settings/host', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(payload) });
+  const j = await r.json();
+  if (j.ok) {
+    toast('Host saved','ok');
+    ['#name','#baseUrl','#mac','#token','#oldBaseUrl'].forEach(s=>setVal(s,''));
+    await refreshHosts();
+  } else {
+    toast(j.message || 'Save failed','bad');
+  }
+}
+
+window.addEventListener('DOMContentLoaded', async ()=>{
+  await loadAppSettings();
+  await refreshHosts();
+  q('#hostForm').addEventListener('submit', saveHost);
+  q('#saveApp').addEventListener('click', saveAppSettings);
+});
