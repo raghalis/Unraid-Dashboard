@@ -1,49 +1,17 @@
-/* Shared browser helpers */
+export const q = (s, r=document) => r.querySelector(s);
+export const el = (tag, cls, txt) => { const n=document.createElement(tag); if(cls) n.className=cls; if(txt!=null) n.textContent=txt; return n; };
+export const val = s => q(s)?.value || '';
+export const setVal = (s,v)=>{ const n=q(s); if(n) n.value=v; };
 
-function $(sel){ return document.querySelector(sel); }
-function $all(sel){ return Array.from(document.querySelectorAll(sel)); }
+export function fmtPct(v){ return Number.isFinite(+v) ? `${Math.round(+v)}%` : '—'; }
 
-function getCookie(name){
-  const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
-  return m ? decodeURIComponent(m[1]) : '';
+export function toast(msg,type='info'){
+  let t=q('#toast'); if(!t){ t=el('div','toast'); t.id='toast'; document.body.appendChild(t); }
+  t.className = `toast ${type}`; t.textContent = msg; t.style.opacity='1';
+  setTimeout(()=>t.style.opacity='0', 2000);
 }
 
-function csrfHeaders(){
-  const tok = getCookie('ucp_csrf');
-  return tok ? { 'x-csrf-token': tok } : {};
-}
-
-async function jsonFetch(url, opts = {}){
-  const hdrs = Object.assign(
-    { 'accept':'application/json', 'content-type':'application/json' },
-    csrfHeaders(),
-    opts.headers || {}
-  );
-  const res = await fetch(url, Object.assign({}, opts, { headers: hdrs }));
-  const text = await res.text();
-  let js;
-  try { js = text ? JSON.parse(text) : {}; } catch { js = { raw: text }; }
-  if (!res.ok) {
-    const msg = js?.message || js?.error || `HTTP ${res.status}`;
-    const err = new Error(msg);
-    err.status = res.status;
-    err.body = js;
-    throw err;
-  }
-  return js;
-}
-
-function setBadge(el, ok, msg){
-  el.className = 'resp ' + (ok ? 'ok' : 'err');
-  el.textContent = msg;
-}
-
-async function showVersion(){
-  try {
-    const v = await jsonFetch('/version');
-    const node = document.getElementById('appVersion');
-    if (node) node.textContent = `v${v.version}`;
-  } catch {}
-}
-
-document.addEventListener('DOMContentLoaded', showVersion);
+window.addEventListener('DOMContentLoaded', async ()=>{
+  // version bubble
+  try{ const r=await fetch('/version'); const j=await r.json(); const v=q('#ver'); if(v) v.textContent=`v${j.version}`; }catch{}
+});
