@@ -17,40 +17,59 @@ import { sendWol } from './api/wol.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
-/* ------------------------------- Logging -------------------------------- */
+/* =============================== logging =============================== */
+
 const DATA_DIR = '/app/data';
 const LOG_PATH = path.join(DATA_DIR, 'app.log');
 fs.mkdirSync(DATA_DIR, { recursive: true });
+
 const levels = { error: 0, warn: 1, info: 2, debug: 3 };
-function now(){ return new Date().toISOString(); }
+function tzNow() {
+  // Local timezone of the container (respects TZ env)
+  return new Intl.DateTimeFormat(undefined, {
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit',
+    hour12:false
+  }).format(new Date());
+}
 function shouldLog(level){
   const { logLevel } = getAppSettings();
   return (levels[level] ?? 2) <= (levels[logLevel] ?? 2);
 }
-function log(level, msg, ctx={}) {
-  if (!shouldLog(level)) return;
-  const line = JSON.stringify({ ts: now(), level, msg, ctx });
-  console.log(line);
-  try { fs.appendFileSync(LOG_PATH, line + '\n'); } catch {}
+function line(level, msg, ctx){
+  const ctxStr = ctx ? ` | ${ctx}` : '';
+  return `[${tzNow()}] ${level.toUpperCase()}  ${msg}${ctxStr}`;
 }
-const info=(m,c)=>log('info',m,c); const warn=(m,c)=>log('warn',m,c); const error=(m,c)=>log('error',m,c); const debug=(m,c)=>log('debug',m,c);
+function log(level, msg, ctxObj) {
+  if (!shouldLog(level)) return;
+  const ctx = ctxObj
+    ? Object.entries(ctxObj).map(([k,v]) => `${k}=${typeof v==='string'?v:JSON.stringify(v)}`).join(' ')
+    : '';
+  const l = line(level, msg, ctx);
+  console.log(l);
+  try { fs.appendFileSync(LOG_PATH, l + '\n'); } catch {}
+}
+const info=(m,c)=>log('info',m,c);
+const warn=(m,c)=>log('warn',m,c);
+const error=(m,c)=>log('error',m,c);
+const debug=(m,c)=>log('debug',m,c);
 
-/* -------------------------------- Setup --------------------------------- */
+/* ================================ setup ================================ */
+
 initStore();
 app.use(express.json({ limit: '1mb' }));
 app.use(nocache());
 
-/* ----------------------------- HTTP Trace ------------------------------- */
+/* HTTP access log (pretty) */
 app.use((req,res,next)=>{
   const { debugHttp } = getAppSettings();
-  if (debugHttp) {
-    const t0 = Date.now();
-    res.on('finish', () => info('http', { method:req.method, url:req.originalUrl, status:res.statusCode, ms:Date.now()-t0 }));
-  }
+  if (!debugHttp) return next();
+  const t0 = Date.now();
+  res.on('finish', () => info('HTTP', { method:req.method, url:req.originalUrl, status:res.statusCode, ms:Date.now()-t0 }));
   next();
 });
 
-/* ------------------------------ Health/Ver ------------------------------ */
+/* health & version */
 app.get('/health', (_req,res)=>res.status(200).type('text/plain').send('ok'));
 app.get('/version', (_req,res)=>{
   let version = '0.0.0';
@@ -58,53 +77,59 @@ app.get('/version', (_req,res)=>{
   res.json({ version });
 });
 
-/* ------------------------------ Static UI ------------------------------- */
+/* static */
 app.use('/', express.static(path.join(__dirname, 'web')));
 
-/* ---------------------------- Helpers (HTTP) ---------------------------- */
+/* helpers */
 const OK  = (res, payload) => Array.isArray(payload) ? res.json(payload) : res.json(Object.assign({ ok:true }, payload || {}));
 const FAIL= (res, status, message, details)=>res.status(status).json({ ok:false, error:message, message, details });
 
-/* --------------------------------- API ---------------------------------- */
-// Dashboard cards
+/* ================================ API ================================= */
+
+/* Dashboard: resilient status with warnings surfaced */
 app.get('/api/servers', async (_req, res) => {
   const hosts = listHosts();
   const out = await Promise.all(hosts.map(async h => {
     const st = await getHostStatus(h.baseUrl);
-    return {
-      name: h.name, baseUrl: h.baseUrl, mac: h.mac,
-      status: st.ok ? st.data : null, error: st.ok ? null : st.error
-    };
+    if (!st.ok) {
+      warn('status.fail', { base:h.baseUrl, error:st.error });
+      return { name:h.name, baseUrl:h.baseUrl, mac:h.mac, status:null, error:st.error };
+    }
+    if (st.warnings?.length) {
+      warn('status.partial', { base:h.baseUrl, warnings:st.warnings.join(' | ') });
+    }
+    return { name:h.name, baseUrl:h.baseUrl, mac:h.mac, status:st.data, error:null, warnings:st.warnings || [] };
   }));
   OK(res, out);
 });
 
-/* Containers / VMs (same as before) */
+/* Containers */
 app.get('/api/host/docker', async (req, res) => {
   const base = String(req.query.base || '');
   try { const items = await listContainers(base); OK(res, items); }
-  catch (e) { error('docker.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list containers.'); }
+  catch (e) { error('docker.list', { base, err:String(e) }); FAIL(res, 502, 'Failed to list containers.'); }
 });
 app.post('/api/host/docker/action', async (req, res) => {
   const base = String(req.query.base || '');
   const { id, action } = req.body || {};
   try { await containerAction(base, id, action); OK(res, {}); }
-  catch (e) { error('docker.action', { base, id, action, err: String(e) }); FAIL(res, 502, `Container ${action} failed: ${e.message}`); }
+  catch (e) { error('docker.action', { base, id, action, err:String(e) }); FAIL(res, 502, `Container ${action} failed: ${e.message}`); }
 });
 
+/* VMs */
 app.get('/api/host/vms', async (req, res) => {
   const base = String(req.query.base || '');
   try { const items = await listVMs(base); OK(res, items); }
-  catch (e) { error('vms.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list VMs.'); }
+  catch (e) { error('vms.list', { base, err:String(e) }); FAIL(res, 502, 'Failed to list VMs.'); }
 });
 app.post('/api/host/vm/action', async (req, res) => {
   const base = String(req.query.base || '');
   const { id, action } = req.body || {};
   try { await vmAction(base, id, action); OK(res, {}); }
-  catch (e) { error('vm.action', { base, id, action, err: String(e) }); FAIL(res, 502, `VM ${action} failed: ${e.message}`); }
+  catch (e) { error('vm.action', { base, id, action, err:String(e) }); FAIL(res, 502, `VM ${action} failed: ${e.message}`); }
 });
 
-/* Power/WOL (unchanged) */
+/* Power/WOL */
 app.post('/api/host', async (req, res) => {
   const base = String(req.query.base || '');
   const kind = String(req.query.action || '');
@@ -115,15 +140,16 @@ app.post('/api/host', async (req, res) => {
     if (kind === 'power') {
       if (action === 'wake') {
         await sendWol(host.mac, process.env.WOL_BROADCAST || '255.255.255.255', process.env.WOL_INTERFACE || 'eth0');
-        info('power.wake', { base, mac: host.mac }); return OK(res, {});
+        info('power.wake', { base, mac:host.mac }); return OK(res, {});
       }
       return FAIL(res, 400, 'Shutdown/Reboot unsupported via API.');
     }
     return FAIL(res, 400, 'Unsupported action.');
-  } catch (e) { error('power.error', { base, action, err: String(e) }); FAIL(res, 502, `Power action failed: ${e.message}`); }
+  } catch (e) { error('power.error', { base, action, err:String(e) }); FAIL(res, 502, `Power action failed: ${e.message}`); }
 });
 
 /* ----------------------------- Settings API ----------------------------- */
+
 app.get('/api/settings/hosts', (_req,res) => {
   const hosts = listHosts();
   const tokens = tokensSummary();
@@ -131,27 +157,35 @@ app.get('/api/settings/hosts', (_req,res) => {
   OK(res, arr);
 });
 
-/* Transactional save: validate token then persist host & token */
+/**
+ * Transactional host save:
+ * - we persist the token temporarily to test
+ * - host is saved only if at least one status section succeeds
+ */
 app.post('/api/settings/host', async (req,res) => {
   const { name, baseUrl, mac, token, oldBaseUrl } = req.body || {};
   try {
     if (!name || !baseUrl || !mac || !token) throw new Error('Missing fields.');
-    // store token temporarily to validate
     setToken(baseUrl, token);
+
     const test = await getHostStatus(baseUrl);
     if (!test.ok) throw new Error(test.error || 'Validation failed.');
 
-    // upsert host
     const saved = upsertHost({ name, baseUrl, mac });
 
-    // if editing and base changed, remove old
     if (oldBaseUrl && oldBaseUrl !== baseUrl) {
       try { deleteHost(oldBaseUrl); } catch {}
     }
 
-    info('host.upsert', { base: saved.baseUrl });
-    OK(res, { host: { ...saved, tokenSet: true } });
+    if (test.warnings?.length) {
+      warn('host.validate.partial', { base: baseUrl, warnings: test.warnings.join(' | ') });
+    } else {
+      info('host.validate.ok', { base: baseUrl });
+    }
+
+    OK(res, { host: { ...saved, tokenSet: true }, warnings: test.warnings || [] });
   } catch (e) {
+    error('host.save.fail', { base: baseUrl, err: String(e) });
     FAIL(res, 400, e.message || 'Invalid host data.');
   }
 });
@@ -161,22 +195,21 @@ app.delete('/api/settings/host', (req,res) => {
   catch { FAIL(res, 400, 'Failed to delete host.'); }
 });
 
-/* Token endpoint for explicit updates if desired */
 app.post('/api/settings/token', (req,res) => {
   const { baseUrl, token } = req.body || {};
   try { setToken(baseUrl, token); info('token.set', { base: baseUrl }); OK(res, {}); }
   catch (e) { FAIL(res, 400, e.message || 'Failed to save token.'); }
 });
 
-/* Connection test (used by per-row Test) */
 app.get('/api/settings/test', async (req,res) => {
   const base = String(req.query.base || '');
   const r = await getHostStatus(base);
-  if (!r.ok) { return FAIL(res, 502, r.error); }
-  OK(res, { system: r.data?.system || null });
+  if (!r.ok) { warn('settings.test.fail', { base, err:r.error }); return FAIL(res, 502, r.error); }
+  if (r.warnings?.length) warn('settings.test.partial', { base, warnings:r.warnings.join(' | ') });
+  OK(res, { system: r.data?.system || null, warnings: r.warnings || [] });
 });
 
-/* -------- App-level settings moved from Docker template into UI -------- */
+/* --------- App-level settings (tweak at runtime; no redeploy) ---------- */
 app.get('/api/app', (_req,res)=>OK(res, { settings: getAppSettings() }));
 app.post('/api/app', (req,res)=>{
   const { debugHttp, logLevel, allowSelfSigned } = req.body || {};
@@ -189,9 +222,14 @@ app.post('/api/app', (req,res)=>{
   OK(res, { settings: saved });
 });
 
-/* ------------------------------ Routes/UI ------------------------------- */
+/* pages */
 app.get('/settings', (_req,res)=>res.sendFile(path.join(__dirname,'web','settings.html')));
 
-/* ------------------------------- Start ---------------------------------- */
+/* start */
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => { info('server.start', { port: PORT, clientDir: '/app/src/web', version: (()=>{try{return JSON.parse(fs.readFileSync(path.join(__dirname,'..','package.json'),'utf8')).version}catch{return '0.0.0'}})() }); console.log(`Unraid Dashboard listening on :${PORT}`); });
+app.listen(PORT, () => {
+  let version = '0.0.0';
+  try { version = JSON.parse(fs.readFileSync(path.join(__dirname,'..','package.json'),'utf8')).version; } catch {}
+  info('server.start', { port: PORT, version, clientDir: '/app/src/web' });
+  console.log(`Unraid Dashboard listening on :${PORT}`);
+});
