@@ -1,87 +1,30 @@
 import fetch from 'node-fetch';
 import https from 'https';
-import http from 'http';
-import { getToken } from '../store/configStore.js';
+import { getToken, getAppSettings } from '../store/configStore.js';
 
-/* ========================= TLS, agents & knobs ========================= */
-
-const allowSelfSigned = (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true';
-const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 6000);
-const REQUEST_RETRIES    = Number(process.env.REQUEST_RETRIES || 2);
-
-// Keep-alive agents reduce connection churn/timeouts
-const httpsAgent = new https.Agent({
-  rejectUnauthorized: !allowSelfSigned,
-  keepAlive: true,
-  maxSockets: 32,
-});
-const httpAgent = new http.Agent({
-  keepAlive: true,
-  maxSockets: 32,
-});
+/* ========================= TLS & helpers ========================= */
 
 function agentFor(urlString) {
   const u = new URL(urlString);
-  if (u.protocol === 'https:') return httpsAgent;
-  if (u.protocol === 'http:') return httpAgent;
-  throw new Error(`Unsupported protocol: ${u.protocol}`);
+  if (u.protocol !== 'https:') return undefined;
+  const { allowSelfSigned } = getAppSettings();
+  return new https.Agent({ rejectUnauthorized: !allowSelfSigned });
 }
-
-/* ============================== Error hints ============================ */
 
 function netHint(err) {
   const m = String(err?.message || '').toLowerCase();
-  if (m.includes('self signed')) return 'TLS failed: self-signed certificate. Enable UNRAID_ALLOW_SELF_SIGNED=true or use a trusted cert.';
+  if (m.includes('self signed')) return 'TLS failed: self-signed certificate.';
   if (m.includes('unauthorized') || m.includes('401')) return 'Unauthorized. Check Unraid API key.';
   if (m.includes('econnrefused')) return 'Connection refused by Unraid host.';
   if (m.includes('getaddrinfo') || m.includes('dns')) return 'DNS resolution problem.';
-  if (m.includes('timeout') || m.includes('aborted')) return 'Request timed out.';
+  if (m.includes('timeout')) return 'Request timed out.';
   return null;
 }
 
-/* ===================== fetch with timeout + retries ==================== */
-
-async function fetchWithRetry(endpoint, opts, label = 'request') {
-  let attempt = 0;
-  let lastErr;
-
-  const maxAttempts = Math.max(1, REQUEST_RETRIES + 1);
-
-  while (attempt < maxAttempts) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
-      const res = await fetch(endpoint, {
-        ...opts,
-        // node-fetch uses "agent:" for http(s) agents
-        agent: agentFor(endpoint),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      return res;
-    } catch (e) {
-      clearTimeout(timer);
-      lastErr = e;
-      // Backoff: 400ms, 800ms, 1600ms...
-      const backoff = 400 * Math.pow(2, attempt);
-      // eslint-disable-next-line no-console
-      console.warn(`[${label}] attempt ${attempt + 1}/${maxAttempts} failed: ${e.message}`);
-      attempt += 1;
-      if (attempt >= maxAttempts) break;
-      await new Promise(r => setTimeout(r, backoff));
-    }
-  }
-
-  throw lastErr;
-}
-
-async function httpJSON(endpoint, opts, label = 'httpJSON') {
+async function httpJSON(endpoint, opts) {
   let res;
-  try {
-    res = await fetchWithRetry(endpoint, opts, label);
-  } catch (e) {
-    throw new Error(netHint(e) || `Network error: ${e.message || e}`);
-  }
+  try { res = await fetch(endpoint, { ...opts, agent: agentFor(endpoint) }); }
+  catch (e) { throw new Error(netHint(e) || `Network error: ${e.message || e}`); }
   const text = await res.text();
   let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
   return { ok: res.ok, status: res.status, json };
@@ -99,10 +42,10 @@ async function gql(baseUrl, query, variables = {}) {
     headers: {
       'content-type': 'application/json',
       'accept': 'application/json',
-      'x-api-key': token,           // Unraid 7+ header
+      'x-api-key': token
     },
-    body: JSON.stringify({ query, variables }),
-  }, 'graphql');
+    body: JSON.stringify({ query, variables })
+  });
 
   if (!ok) {
     const msg = (json?.errors && json.errors[0]?.message) || `HTTP ${status}`;
@@ -121,10 +64,7 @@ async function tryQueries(baseUrl, variants, variables) {
   let lastErr;
   for (const q of variants) {
     try { return await gql(baseUrl, q, variables); }
-    catch (e) {
-      lastErr = e;
-      if (!e._validation) break; // stop on non-schema errors
-    }
+    catch (e) { lastErr = e; if (!e._validation) break; }
   }
   throw lastErr;
 }
@@ -132,18 +72,23 @@ async function tryQueries(baseUrl, variants, variables) {
 /* ======================== Query variants (adaptive) ===================== */
 
 const Q_INFO_ARRAY = [
-  `query { info { os { distro release uptime } } array { state } }`,
-  `query { system { hostname osVersion uptime } array { status parityStatus } }`,
+  `query { info { os { distro release uptime } } array { state capacity { used total } } }`,
+  `query { system { hostname osVersion uptime } array { status capacity { used total } } }`
 ];
 
 const Q_DOCKERS = [
   `query { docker { containers { id names image status state autoStart } } }`,
-  `query { docker { list { id name image status state } } }`,
+  `query { docker { list { id name image status state } } }`
 ];
 
 const Q_VMS = [
   `query { vms { domains { id name state } } }`,
-  `query { vms { domain(id:"*") { id name state } } }`, // fallback no-op-ish
+  `query { vms { domain(id:"*") { id name state } } }`
+];
+
+const Q_METRICS = [
+  `query { metrics { cpu { percentTotal } memory { percentTotal } } }`,
+  `query { info { versions { id } } }` // harmless fallback (we'll treat as n/a)
 ];
 
 /* ============================ Public functions ========================== */
@@ -154,6 +99,7 @@ export async function getHostStatus(baseUrl) {
 
     // normalize info/system
     let hostname='(Unraid)', osVersion='', uptime=null, arrayStatus='';
+    let used=null,total=null;
     if (sys.info?.os) {
       hostname = sys.info.os.distro || hostname;
       osVersion = sys.info.os.release || osVersion;
@@ -163,7 +109,11 @@ export async function getHostStatus(baseUrl) {
       osVersion = sys.system.osVersion || osVersion;
       uptime = sys.system.uptime ?? uptime;
     }
-    arrayStatus = sys.array?.state || sys.array?.status || '';
+    const arrObj = sys.array || {};
+    arrayStatus = arrObj.state || arrObj.status || '';
+    used = arrObj.capacity?.used ?? null;
+    total = arrObj.capacity?.total ?? null;
+    const storagePct = (used && total) ? Math.round((used/total)*100) : null;
 
     // containers
     const dock = await tryQueries(baseUrl, Q_DOCKERS);
@@ -175,7 +125,7 @@ export async function getHostStatus(baseUrl) {
       id: c.id,
       name: Array.isArray(c.names) ? (c.names[0] || c.id) : (c.name || c.id),
       image: c.image || '',
-      state: c.state || (String(c.status || '').toLowerCase().includes('up') ? 'running' : 'stopped'),
+      state: c.state || (String(c.status || '').toLowerCase().includes('up') ? 'running' : 'stopped')
     }));
     const running = mapped.filter(c => String(c.state).toLowerCase() === 'running').length;
 
@@ -186,18 +136,27 @@ export async function getHostStatus(baseUrl) {
       const domains = v?.vms?.domains || [];
       vCount = domains.length;
       vRun = domains.filter(d => String(d.state).toLowerCase() === 'running').length;
-    } catch { /* schema might omit vms; ignore */ }
+    } catch { /* optional */ }
+
+    // metrics
+    let cpuPct = null, ramPct = null;
+    try {
+      const m = await tryQueries(baseUrl, Q_METRICS);
+      cpuPct = Math.round(m?.metrics?.cpu?.percentTotal ?? null);
+      ramPct = Math.round(m?.metrics?.memory?.percentTotal ?? null);
+    } catch { /* optional */ }
 
     return {
       ok: true,
       data: {
-        system: { hostname, osVersion, uptime, array: { status: arrayStatus } },
+        system: { hostname, osVersion, uptime, array: { status: arrayStatus, storagePct } },
         docker: { running, total: mapped.length },
         vms: { running: vRun, total: vCount },
+        metrics: { cpuPct, ramPct, storagePct }
       }
     };
   } catch (e) {
-    return { ok: false, error: netHint(e) || e.message || String(e) };
+    return { ok: false, error: e.message || String(e) };
   }
 }
 
@@ -208,7 +167,7 @@ export async function listContainers(baseUrl) {
     id: c.id,
     name: Array.isArray(c.names) ? (c.names[0] || c.id) : (c.name || c.id),
     image: c.image || '',
-    state: c.state || (String(c.status || '').toLowerCase().includes('up') ? 'running' : 'stopped'),
+    state: c.state || (String(c.status || '').toLowerCase().includes('up') ? 'running' : 'stopped')
   }));
 }
 
@@ -217,9 +176,7 @@ export async function listVMs(baseUrl) {
     const d = await tryQueries(baseUrl, Q_VMS);
     const arr = d?.vms?.domains || [];
     return arr.map(v => ({ id: v.id, name: v.name, state: v.state }));
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
 /* ----------------------- Mutations with fallbacks ----------------------- */
@@ -234,7 +191,6 @@ async function tryMutations(baseUrl, variants, variablesList) {
 }
 
 export async function containerAction(baseUrl, id, action) {
-  // restart -> stop then start
   if (action === 'restart') {
     await containerAction(baseUrl, id, 'stop');
     return containerAction(baseUrl, id, 'start');
@@ -243,7 +199,7 @@ export async function containerAction(baseUrl, id, action) {
   const queries = [
     `mutation($id:ID!){ docker { ${field}(id:$id) } }`,
     `mutation($id:String!){ docker { ${field}(containerId:$id) } }`,
-    `mutation{ docker { ${field}(id:"${id}") } }`,
+    `mutation{ docker { ${field}(id:"${id}") } }`
   ];
   const vars = [{ id }, { id }];
   await tryMutations(baseUrl, queries, vars);
@@ -256,14 +212,13 @@ export async function vmAction(baseUrl, id, action) {
   const queries = [
     `mutation($id:ID!){ vm { ${action}(id:$id) } }`,
     `mutation($id:String!){ vm { ${action}(domainId:$id) } }`,
-    `mutation{ vm { ${action}(id:"${id}") } }`,
+    `mutation{ vm { ${action}(id:"${id}") } }`
   ];
   const vars = [{ id }, { id }];
   await tryMutations(baseUrl, queries, vars);
   return true;
 }
 
-// Not exposed (no power/system mutations in schema). Keep stub for server.
-export async function powerAction(_baseUrl, _action) {
+export async function powerAction() {
   throw new Error('System power actions are not available via this Unraid API.');
 }
