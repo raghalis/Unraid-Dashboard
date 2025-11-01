@@ -51,3 +51,12 @@ input[type="checkbox"]{width:auto}
   .gauge{width:100px;height:58px}
   .table th:nth-child(2), .table td:nth-child(2){max-width:200px;overflow:hidden;text-overflow:ellipsis}
 }
+.tabs{display:flex;gap:8px;margin:8px 0 14px}
+.tab{background:#14233a;color:#e8f1ff;border:1px solid #22324b;padding:8px 12px;border-radius:10px;cursor:pointer}
+.tab.active{background:#1d2d4b;border-color:#2f4a78}
+
+.tabpane{display:none}
+.tabpane.active{display:block}
+
+/* small tweak for “muted” text block in webpage tab */
+.muted{color:var(--muted)}
