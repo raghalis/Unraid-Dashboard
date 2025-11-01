@@ -1,44 +1,35 @@
 <!doctype html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="utf-8" />
-  <title>Unraid Control — Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" href="/favicon.ico" />
-  <link rel="stylesheet" href="/css/styles.css" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Dashboard • Unraid Control</title>
+  <link rel="stylesheet" href="/css/styles.css"/>
 </head>
 <body>
-  <header class="topbar">
-    <h1>Unraid Control</h1>
-    <nav>
-      <a class="nav active" href="/">Dashboard</a>
-      <a class="nav" href="/settings">Settings</a>
-    </nav>
-    <div class="version" id="appVersion"></div>
-  </header>
+  <div class="container">
+    <div class="card">
+      <div class="h2">Servers</div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Server Address</th>
+              <th>Array</th>
+              <th>CPU%</th>
+              <th>RAM%</th>
+              <th>Storage%</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="servers-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
-  <main class="container">
-    <section class="card">
-      <h2>Servers</h2>
-      <div id="serversEmpty" class="muted" style="display:none">No servers yet. Add one in <a href="/settings">Settings</a>.</div>
-      <table class="table responsive" id="serversTable">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Base URL</th>
-            <th>Array</th>
-            <th>CPU%</th>
-            <th>RAM%</th>
-            <th>Storage%</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="serversBody"></tbody>
-      </table>
-    </section>
-  </main>
-
-  <script src="/js/common.js"></script>
-  <script src="/js/dashboard.js"></script>
+  <script type="module" src="/js/common.js"></script>
+  <script type="module" src="/js/dashboard.js"></script>
 </body>
 </html>
