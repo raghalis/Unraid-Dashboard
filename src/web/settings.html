@@ -9,17 +9,25 @@
 <body>
   <header class="nav">
     <div class="brand"><a href="/">Unraid Control</a></div>
-    <nav><a href="/">Dashboard</a><a href="/settings">Settings</a><span id="ver" class="ver"></span></nav>
+    <nav><a href="/">Dashboard</a><a href="/settings" class="active">Settings</a><span id="ver" class="ver"></span></nav>
   </header>
 
   <main class="container">
 
-    <section class="panel">
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="hosts">Host Settings</button>
+      <button class="tab" data-tab="app">App Settings</button>
+      <button class="tab" data-tab="web">Webpage Settings</button>
+    </div>
+
+    <!-- HOSTS TAB -->
+    <section class="panel tabpane active" id="tab-hosts">
       <h2>Add / Update Server</h2>
       <form id="hostForm" class="grid">
         <input id="oldBaseUrl" type="hidden" />
-        <label>Name<input id="name" required></label>
-        <label>Base URL<input id="baseUrl" placeholder="https://192.168.1.3" required></label>
+        <label>Server Name<input id="name" required></label>
+        <label>Server Address<input id="baseUrl" placeholder="https://192.168.1.3" required></label>
         <label>MAC (AA:BB:CC:DD:EE:FF)<input id="mac" placeholder="BC:30:5B:E9:60:D9" required></label>
         <label>API Token<input id="token" placeholder="Paste Unraid API token" type="password" /></label>
         <div class="actions">
@@ -27,18 +35,18 @@
         </div>
       </form>
       <p class="tip">Token tip: create an API token with Docker/VM/System permissions. For self-signed HTTPS, set <code>UNRAID_ALLOW_SELF_SIGNED=true</code>.</p>
-      <div id="resp"></div>
-    </section>
 
-    <section class="panel">
       <h2>Saved Hosts</h2>
       <table class="table">
-        <thead><tr><th>Name</th><th>Base URL</th><th>MAC</th><th>Token</th><th>Actions</th></tr></thead>
+        <thead>
+          <tr><th>Name</th><th>Server Address</th><th>MAC</th><th>Token</th><th>Actions</th></tr>
+        </thead>
         <tbody id="hosts-body"></tbody>
       </table>
     </section>
 
-    <section class="panel">
+    <!-- APP TAB -->
+    <section class="panel tabpane" id="tab-app">
       <h2>App Settings</h2>
       <div class="grid">
         <label>Auto-refresh (seconds, ≥ 5)
@@ -53,6 +61,12 @@
         <label class="chk"><input type="checkbox" id="allowSelfSigned"> Allow self-signed TLS</label>
         <div class="actions"><button id="saveApp" class="btn">Save Settings</button></div>
       </div>
+    </section>
+
+    <!-- WEBPAGE TAB (placeholder for theming/branding) -->
+    <section class="panel tabpane" id="tab-web">
+      <h2>Webpage Settings</h2>
+      <p class="muted">Coming soon: theme (light/dark/auto), accent color, footer toggles, and custom banner text. Hook up anything you want here—we've scaffolded the tab so you won’t need to redesign later.</p>
     </section>
 
   </main>
