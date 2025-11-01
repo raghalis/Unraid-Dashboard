@@ -4,182 +4,276 @@ import fs from 'fs';
 import nocache from 'nocache';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+
 import {
   initStore, listHosts, upsertHost, deleteHost,
-  setToken, tokensSummary, getAppSettings, setAppSettings
+  setToken, tokensSummary
 } from './store/configStore.js';
+
 import {
   getHostStatus, listContainers, listVMs,
   containerAction, vmAction, powerAction
 } from './api/unraid.js';
+
 import { sendWol } from './api/wol.js';
 
+/* ------------------------------- Paths ---------------------------------- */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
+const CLIENT_DIR = path.join(__dirname, 'web');
 
-/* =============================== logging =============================== */
-
+/* -------------------------------- Env ----------------------------------- */
+const PORT   = process.env.PORT || 8080;
+const APPVER = process.env.npm_package_version || '0.0.0';
 const DATA_DIR = '/app/data';
 const LOG_PATH = path.join(DATA_DIR, 'app.log');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const LV = { error: 0, warn: 1, info: 2, debug: 3 };
-function nowLocal() {
-  return new Intl.DateTimeFormat(undefined, {
-    year:'numeric', month:'2-digit', day:'2-digit',
-    hour:'2-digit', minute:'2-digit', second:'2-digit',
-    hour12:false
-  }).format(new Date());
+/* Optional: allow insecure TLS for self-signed targets */
+if ((process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true') {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
-function should(level){ return (LV[getAppSettings().logLevel] ?? 2) >= (LV[level] ?? 2); }
-function write(line){ console.log(line); try{ fs.appendFileSync(LOG_PATH, line+'\n'); }catch{} }
-function log(level, msg, ctx) {
-  if (!should(level)) return;
-  const { debugHttp } = getAppSettings();
-  const tail = (debugHttp && ctx) ? ` | ${Object.entries(ctx).map(([k,v]) => `${k}=${typeof v==='string'?v:JSON.stringify(v)}`).join(' ')}` : '';
-  write(`[${nowLocal()}] ${level.toUpperCase()} ${msg}${tail}`);
+
+/* ----------------------------- Local logger ------------------------------ */
+/* Human-readable, local-time, concise. LOG_LEVEL: error|warn|info|debug */
+const LEVELS = ['error','warn','info','debug'];
+const MIN_LVL = Math.max(0, LEVELS.indexOf((process.env.LOG_LEVEL || 'info').toLowerCase()));
+function ts() { return new Date().toLocaleString(); }
+function write(line) { try { fs.appendFileSync(LOG_PATH, line + '\n'); } catch {} }
+function out(level, msg, ctx = {}) {
+  const lvlIdx = LEVELS.indexOf(level);
+  if (lvlIdx > MIN_LVL) return;
+  const extras = Object.entries(ctx).map(([k,v])=>{
+    try { return `${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`; }
+    catch { return `${k}=[unserializable]`; }
+  }).join(' ');
+  const line = `[${ts()}] ${level.toUpperCase()} ${msg}${extras ? ' | ' + extras : ''}`;
+  console.log(line);
+  write(line);
 }
-const info=(m,c)=>log('info',m,c);
-const warn=(m,c)=>log('warn',m,c);
-const error=(m,c)=>log('error',m,c);
-const debug=(m,c)=>log('debug',m,c);
+const info  = (m,c)=>out('info',m,c);
+const warn  = (m,c)=>out('warn',m,c);
+const error = (m,c)=>out('error',m,c);
+const debug = (m,c)=>out('debug',m,c);
 
-/* ================================ setup ================================ */
-
+/* ------------------------------ App setup -------------------------------- */
+const app = express();
 initStore();
 app.use(express.json({ limit: '1mb' }));
 app.use(nocache());
 
-/* optional HTTP access log (only in debug mode) */
-app.use((req,res,next)=>{
-  if (!getAppSettings().debugHttp) return next();
-  const t0 = Date.now();
-  res.on('finish', ()=> info('HTTP', { method:req.method, url:req.originalUrl, status:res.statusCode, ms:Date.now()-t0 }));
+/* ---------------------------- HTTP logger -------------------------------- */
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    info('http', { method: req.method, url: req.originalUrl, status: res.statusCode, ms: Date.now() - start });
+  });
   next();
 });
 
-/* health/version */
-app.get('/health', (_req,res)=>res.status(200).type('text/plain').send('ok'));
-app.get('/version', (_req,res)=>{
-  let version='0.0.0'; try{ version=JSON.parse(fs.readFileSync(path.join(__dirname,'..','package.json'),'utf8')).version||version; }catch{}
-  res.json({ version });
+/* ----------------------------- Basic Auth -------------------------------- */
+const USER = process.env.BASIC_AUTH_USER || '';
+const PASS = process.env.BASIC_AUTH_PASS || '';
+app.use(async (req, res, next) => {
+  if (!USER || !PASS) return next();
+  const { default: auth } = await import('basic-auth');
+  const creds = auth(req);
+  if (!creds || creds.name !== USER || creds.pass !== PASS) {
+    res.set('WWW-Authenticate', 'Basic realm="Restricted"');
+    return res.status(401).send('Authentication required.');
+  }
+  next();
 });
 
-/* static */
-app.use('/', express.static(path.join(__dirname, 'web')));
+/* -------------------------------- CSRF ----------------------------------- */
+const CSRF_NAME = 'ucp_csrf';
+const CSRF = process.env.CSRF_SECRET || crypto.randomBytes(16).toString('hex');
+function getCookie(req, name) {
+  const raw = req.headers.cookie || '';
+  const m = raw.match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
+  return m ? decodeURIComponent(m[1]) : '';
+}
+app.use((req, res, next) => {
+  const secure = (req.protocol === 'https') ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${CSRF_NAME}=${encodeURIComponent(CSRF)}; Path=/; SameSite=Lax${secure}`);
+  if (req.method !== 'GET' && req.path.startsWith('/api/')) {
+    const cookieTok = getCookie(req, CSRF_NAME);
+    const headerTok = req.headers['x-csrf-token'] || '';
+    if (!(cookieTok && headerTok && cookieTok === headerTok)) {
+      warn('csrf.fail', { path: req.path, hasCookie: !!cookieTok, hasHeader: !!headerTok });
+      return res.status(403).json({ ok:false, error:'Bad CSRF', message:'Security check failed. Refresh the page and try again.' });
+    }
+  }
+  next();
+});
 
-/* helpers */
-const OK  = (res, payload) => Array.isArray(payload) ? res.json(payload) : res.json(Object.assign({ ok:true }, payload || {}));
-const FAIL= (res, code, message, details) => res.status(code).json({ ok:false, error:message, message, details });
+/* --------------------------- Health & Version ----------------------------- */
+app.get('/health', (_req, res) => res.status(200).send('ok'));
+app.get('/version', (_req, res) => res.json({ version: APPVER }));
 
-/* ================================ API ================================= */
+/* ------------------------------ Static UI -------------------------------- */
+app.use('/', express.static(CLIENT_DIR));
 
-/* Dashboard list with partial-success handling */
+/* --------------------------- Helpers (HTTP) ------------------------------- */
+// Smart OK: arrays are returned as-is (so the client gets an array); objects get ok:true wrapper
+const OK  = (res, payload) => Array.isArray(payload)
+  ? res.json(payload)
+  : res.json(Object.assign({ ok:true }, payload || {}));
+const FAIL= (res, status, message, details)=>res.status(status).json({ ok:false, error:message, message, details });
+
+/* ------------------------------- API ------------------------------------- */
+/* Resilient servers endpoint: never fails the whole payload because one host is bad */
 app.get('/api/servers', async (_req, res) => {
   const hosts = listHosts();
-  const out = await Promise.all(hosts.map(async h => {
-    const st = await getHostStatus(h.baseUrl);
-    if (!st.ok) {
-      warn('Status check failed');
-      return { name:h.name, baseUrl:h.baseUrl, mac:h.mac, status:null, error:st.error };
-    }
-    if (st.warnings?.length) warn('Partial data received');
-    return { name:h.name, baseUrl:h.baseUrl, mac:h.mac, status:st.data, warnings:st.warnings||[] };
-  }));
-  OK(res, out);
+  const settled = await Promise.allSettled(
+    hosts.map(async h => {
+      try {
+        const st = await getHostStatus(h.baseUrl);
+        if (!st || typeof st !== 'object') {
+          // normalize truly odd returns
+          return {
+            name: h.name, baseUrl: h.baseUrl, mac: h.mac,
+            status: { code:'offline', label:'Offline' },
+            metrics: { cpuPct:null, ramPct:null, storagePct:null },
+            error: 'Empty response'
+          };
+        }
+        // Honor ok flag if provided by api/unraid.js; otherwise assume ok with data present
+        const ok = !!st.ok || !!st.data || !!st.status || !!st.metrics;
+        const normalized = {
+          name: h.name,
+          baseUrl: h.baseUrl,
+          mac: h.mac,
+          status: st.status || st.data || { code: ok ? 'ok' : 'unknown', label: ok ? 'OK' : 'Unknown' },
+          metrics: st.metrics || { cpuPct: st.cpuPct ?? null, ramPct: st.ramPct ?? null, storagePct: st.storagePct ?? null },
+          error: ok ? null : (st.error || null),
+        };
+        return normalized;
+      } catch (e) {
+        // belt & suspenders: wrap any thrown error
+        warn('status.partial', { base: h.baseUrl, err: String(e?.message || e) });
+        return {
+          name: h.name, baseUrl: h.baseUrl, mac: h.mac,
+          status: { code:'offline', label:'Offline' },
+          metrics: { cpuPct:null, ramPct:null, storagePct:null },
+          error: e?.message || String(e)
+        };
+      }
+    })
+  );
+
+  const out = settled.map((r, i) => r.status === 'fulfilled'
+    ? r.value
+    : ({
+        name: hosts[i].name,
+        baseUrl: hosts[i].baseUrl,
+        mac: hosts[i].mac,
+        status: { code:'offline', label:'Offline' },
+        metrics: { cpuPct:null, ramPct:null, storagePct:null },
+        error: r.reason?.message || String(r.reason || '')
+      })
+  );
+
+  info('servers.list', { count: out.length });
+  OK(res, out); // returns an array
 });
 
 /* Containers */
-app.get('/api/host/docker', async (req,res)=>{
-  try{ OK(res, await listContainers(String(req.query.base||''))); }
-  catch(e){ error('Container list failed'); FAIL(res,502,'Failed to list containers.'); }
+app.get('/api/host/docker', async (req, res) => {
+  const base = String(req.query.base || '');
+  try { const items = await listContainers(base); OK(res, items); } // array
+  catch (e) { error('docker.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list containers. See logs for details.'); }
 });
-app.post('/api/host/docker/action', async (req,res)=>{
-  const base=String(req.query.base||''); const {id,action}=req.body||{};
-  try{ await containerAction(base,id,action); OK(res,{}); }
-  catch(e){ error(`Container ${action} failed`); FAIL(res,502,`Container ${action} failed: ${e.message}`);}
+app.post('/api/host/docker/action', async (req, res) => {
+  const base = String(req.query.base || '');
+  const { id, action } = req.body || {};
+  try { await containerAction(base, id, action); OK(res, {}); }
+  catch (e) { error('docker.action', { base, id, action, err: String(e) }); FAIL(res, 502, `Container ${action} failed: ${e.message}`); }
 });
 
 /* VMs */
-app.get('/api/host/vms', async (req,res)=>{
-  try{ OK(res, await listVMs(String(req.query.base||''))); }
-  catch(e){ error('VM list failed'); FAIL(res,502,'Failed to list VMs.'); }
+app.get('/api/host/vms', async (req, res) => {
+  const base = String(req.query.base || '');
+  try { const items = await listVMs(base); OK(res, items); } // array
+  catch (e) { error('vms.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list VMs. See logs for details.'); }
 });
-app.post('/api/host/vm/action', async (req,res)=>{
-  const base=String(req.query.base||''); const {id,action}=req.body||{};
-  try{ await vmAction(base,id,action); OK(res,{}); }
-  catch(e){ error(`VM ${action} failed`); FAIL(res,502,`VM ${action} failed: ${e.message}`); }
+app.post('/api/host/vm/action', async (req, res) => {
+  const base = String(req.query.base || '');
+  const { id, action } = req.body || {};
+  try { await vmAction(base, id, action); OK(res, {}); }
+  catch (e) { error('vm.action', { base, id, action, err: String(e) }); FAIL(res, 502, `VM ${action} failed: ${e.message}`); }
 });
 
 /* Power/WOL */
-app.post('/api/host', async (req,res)=>{
+app.post('/api/host', async (req, res) => {
   const base = String(req.query.base || '');
   const kind = String(req.query.action || '');
   const { action } = req.body || {};
   const host = listHosts().find(h => h.baseUrl === base);
-  if (!host) return FAIL(res,404,'Unknown host.');
-  try{
-    if (kind==='power' && action==='wake'){
-      await sendWol(host.mac, process.env.WOL_BROADCAST||'255.255.255.255', process.env.WOL_INTERFACE||'eth0');
-      info('Sent WOL packet'); return OK(res,{});
+  if (!host) return FAIL(res, 404, 'Unknown host. Check Server Address.');
+  try {
+    if (kind === 'power') {
+      if (action === 'wake') {
+        await sendWol(host.mac, process.env.WOL_BROADCAST || '255.255.255.255', process.env.WOL_INTERFACE || 'eth0');
+        info('power.wake', { base, mac: host.mac });
+        return OK(res, {});
+      }
+      const msg = 'Shutdown/Reboot are not available via API in this schema (WOL only).';
+      warn('power.unsupported', { base }); return FAIL(res, 400, msg);
     }
-    return FAIL(res,400,'Unsupported action.');
-  }catch(e){ error('Power action failed'); FAIL(res,502,`Power action failed: ${e.message}`); }
+    return FAIL(res, 400, 'Unsupported action.');
+  } catch (e) {
+    error('power.error', { base, action, err: String(e) });
+    FAIL(res, 502, `Power action failed: ${e.message}`);
+  }
 });
 
-/* Settings: hosts */
-app.get('/api/settings/hosts', (_req,res)=>{
-  const tokens=tokensSummary();
-  OK(res, listHosts().map(h=>({...h, tokenSet: !!tokens[h.baseUrl]})));
+/* Settings (hosts/tokens) */
+app.get('/api/settings/hosts', (_req,res) => {
+  const hosts = listHosts();
+  const tokens = tokensSummary();
+  const arr = hosts.map(h => ({ ...h, tokenSet: !!tokens[h.baseUrl] }));
+  OK(res, arr); // array
+});
+app.post('/api/settings/host', (req,res) => {
+  try { const saved = upsertHost(req.body || {}); info('host.upsert', { base: saved.baseUrl }); OK(res, { host: { ...saved, tokenSet: false } }); }
+  catch (e) { FAIL(res, 400, e.message || 'Invalid host data.'); }
+});
+app.delete('/api/settings/host', (req,res) => {
+  try { deleteHost(String(req.query.base || '')); OK(res, {}); }
+  catch { FAIL(res, 400, 'Failed to delete host.'); }
+});
+app.post('/api/settings/token', (req,res) => {
+  const { baseUrl, token } = req.body || {};
+  try { setToken(baseUrl, token); info('token.set', { base: baseUrl }); OK(res, {}); }
+  catch (e) { FAIL(res, 400, e.message || 'Failed to save token.'); }
+});
+app.get('/api/settings/test', async (req,res) => {
+  const base = String(req.query.base || '');
+  try {
+    const r = await getHostStatus(base);
+    if (!r || r.ok === false) {
+      const msg = r?.error || 'Test failed';
+      warn('settings.test.failed', { base, allowSelfSigned: (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false'), err: msg });
+      return FAIL(res, 502, msg);
+    }
+    OK(res, { system: r.data?.system || null });
+  } catch (e) {
+    warn('settings.test.error', { base, err: String(e) });
+    FAIL(res, 502, e?.message || 'Test failed');
+  }
 });
 
-/* Save or Edit host: test before commit; success returns warnings if any */
-app.post('/api/settings/host', async (req,res)=>{
-  const { name, baseUrl, mac, token, oldBaseUrl } = req.body || {};
-  try{
-    if (!name || !baseUrl || !mac || !token) throw new Error('Missing fields.');
-    setToken(baseUrl, token);
-    const test = await getHostStatus(baseUrl);
-    if (!test.ok) throw new Error(test.error || 'Validation failed.');
-    const saved = upsertHost({ name, baseUrl, mac });
-    if (oldBaseUrl && oldBaseUrl !== baseUrl) { try{ deleteHost(oldBaseUrl); }catch{} }
-    if (test.warnings?.length) warn('Partial data during save');
-    OK(res, { host:{...saved, tokenSet:true}, warnings:test.warnings||[] });
-  }catch(e){ error('Host save failed'); FAIL(res,400,e.message||'Invalid host data.'); }
-});
-app.delete('/api/settings/host', (req,res)=>{
-  try{ deleteHost(String(req.query.base||'')); OK(res,{}); }
-  catch{ FAIL(res,400,'Failed to delete host.'); }
-});
-app.post('/api/settings/token', (req,res)=>{
-  try{ setToken(req.body?.baseUrl, req.body?.token); OK(res,{}); }
-  catch(e){ FAIL(res,400,e.message||'Failed to save token.'); }
-});
-app.get('/api/settings/test', async (req,res)=>{
-  const r = await getHostStatus(String(req.query.base||''));
-  if (!r.ok) { warn('Connection test failed'); return FAIL(res,502,r.error); }
-  if (r.warnings?.length) warn('Connection test partial');
-  OK(res, { system:r.data?.system||null, warnings:r.warnings||[] });
+/* Settings UI */
+app.get('/settings', (_req,res)=>res.sendFile(path.join(CLIENT_DIR,'settings.html')));
+
+/* --------------------------- Error handler last -------------------------- */
+app.use((err, req, res, _next) => {
+  error(err?.message || 'Unhandled error', { url: req?.originalUrl, stack: err?.stack });
+  res.status(500).json({ ok:false, message:'Internal error' });
 });
 
-/* App-level runtime settings (incl. refreshSeconds) */
-app.get('/api/app', (_req,res)=>OK(res, { settings:getAppSettings() }));
-app.post('/api/app', (req,res)=>{
-  const patch = {};
-  if (typeof req.body?.debugHttp === 'boolean') patch.debugHttp = req.body.debugHttp;
-  if (req.body?.logLevel) patch.logLevel = req.body.logLevel;
-  if (typeof req.body?.allowSelfSigned === 'boolean') patch.allowSelfSigned = req.body.allowSelfSigned;
-  if (Number.isFinite(+req.body?.refreshSeconds) && +req.body.refreshSeconds >= 5) patch.refreshSeconds = Math.floor(+req.body.refreshSeconds);
-  OK(res, { settings:setAppSettings(patch) });
-});
-
-/* pages */
-app.get('/settings', (_req,res)=>res.sendFile(path.join(__dirname,'web','settings.html')));
-
-/* start */
-const PORT = process.env.PORT || 8080;
+/* -------------------------------- Start ---------------------------------- */
 app.listen(PORT, () => {
-  let version='0.0.0'; try{ version=JSON.parse(fs.readFileSync(path.join(__dirname,'..','package.json'),'utf8')).version; }catch{}
-  info(`server.start | port=${PORT} version=${version}`);
+  info('server.start', { port: PORT, version: APPVER, clientDir: CLIENT_DIR });
   console.log(`Unraid Dashboard listening on :${PORT}`);
 });
