@@ -1,103 +1,63 @@
 <!doctype html>
-<html lang="en">
+<html>
 <head>
   <meta charset="utf-8" />
-  <title>Unraid Control — Settings</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" href="/favicon.ico" />
+  <title>Settings • Unraid Control</title>
   <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <h1>Unraid Control</h1>
-    <nav>
-      <a class="nav" href="/">Dashboard</a>
-      <a class="nav active" href="/settings">Settings</a>
-    </nav>
-    <div class="version" id="appVersion"></div>
+  <header class="nav">
+    <div class="brand"><a href="/">Unraid Control</a></div>
+    <nav><a href="/">Dashboard</a><a href="/settings">Settings</a><span id="ver" class="ver"></span></nav>
   </header>
 
   <main class="container">
 
-    <section class="card">
+    <section class="panel">
       <h2>Add / Update Server</h2>
-      <input id="editOldBase" type="hidden" value="" />
-      <div class="grid">
-        <label>Name
-          <input id="name" type="text" placeholder="Homeserver1" autocomplete="off" />
-        </label>
-        <label>Base URL
-          <input id="baseUrl" type="text" placeholder="https://192.168.1.3" autocomplete="off" />
-        </label>
-        <label>MAC (AA:BB:CC:DD:EE:FF)
-          <input id="mac" type="text" placeholder="BC:30:5B:E9:60:D9" autocomplete="off" />
-        </label>
-        <label>API Token
-          <div class="password">
-            <input id="token" type="password" placeholder="Paste Unraid API token" autocomplete="off" />
-            <button id="toggleToken" class="btn ghost" type="button">Show</button>
-          </div>
-        </label>
-      </div>
-
-      <div class="btn-row">
-        <button id="saveHost" class="btn primary">Save Host</button>
-        <button id="cancelEdit" class="btn ghost" style="display:none">Cancel</button>
-        <span class="hint">
-          Token tip: create an API token with Docker/VM/System permissions (Users → API Tokens).
-          For self-signed HTTPS, keep <code>UNRAID_ALLOW_SELF_SIGNED=true</code>.
-        </span>
-      </div>
-
-      <div id="resp" class="resp muted"></div>
+      <form id="hostForm" class="grid">
+        <input id="oldBaseUrl" type="hidden" />
+        <label>Name<input id="name" required></label>
+        <label>Base URL<input id="baseUrl" placeholder="https://192.168.1.3" required></label>
+        <label>MAC (AA:BB:CC:DD:EE:FF)<input id="mac" placeholder="BC:30:5B:E9:60:D9" required></label>
+        <label>API Token<input id="token" placeholder="Paste Unraid API token" type="password" /></label>
+        <div class="actions">
+          <button class="btn" type="submit">Save Host</button>
+        </div>
+      </form>
+      <p class="tip">Token tip: create an API token with Docker/VM/System permissions. For self-signed HTTPS, set <code>UNRAID_ALLOW_SELF_SIGNED=true</code>.</p>
+      <div id="resp"></div>
     </section>
 
-    <section class="card">
+    <section class="panel">
       <h2>Saved Hosts</h2>
-      <table class="table responsive">
-        <thead>
-          <tr>
-            <th>Name</th><th>Base URL</th><th>MAC</th><th>Token</th><th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="hostsBody"></tbody>
+      <table class="table">
+        <thead><tr><th>Name</th><th>Base URL</th><th>MAC</th><th>Token</th><th>Actions</th></tr></thead>
+        <tbody id="hosts-body"></tbody>
       </table>
-      <div id="hostsEmpty" class="muted" style="display:none">No hosts saved yet.</div>
     </section>
 
-    <section class="card">
+    <section class="panel">
       <h2>App Settings</h2>
       <div class="grid">
-        <label>Log Level
-          <select id="appLogLevel">
-            <option value="error">error</option>
-            <option value="warn">warn</option>
-            <option value="info" selected>info</option>
-            <option value="debug">debug</option>
+        <label>Auto-refresh (seconds, ≥ 5)
+          <input id="refreshSeconds" type="number" min="5" step="1" value="30" />
+        </label>
+        <label>Log level
+          <select id="logLevel">
+            <option>error</option><option>warn</option><option selected>info</option><option>debug</option>
           </select>
         </label>
-        <label>Debug HTTP
-          <select id="appDebugHttp">
-            <option value="false" selected>No</option>
-            <option value="true">Yes</option>
-          </select>
-        </label>
-        <label>Allow Self-Signed TLS
-          <select id="appSelfSigned">
-            <option value="false" selected>No</option>
-            <option value="true">Yes</option>
-          </select>
-        </label>
-      </div>
-      <div class="btn-row">
-        <button id="saveApp" class="btn">Save App Settings</button>
-        <span id="appResp" class="resp muted"></span>
+        <label class="chk"><input type="checkbox" id="debugHttp"> Show debug HTTP context in logs</label>
+        <label class="chk"><input type="checkbox" id="allowSelfSigned"> Allow self-signed TLS</label>
+        <div class="actions"><button id="saveApp" class="btn">Save Settings</button></div>
       </div>
     </section>
 
   </main>
 
-  <script src="/js/common.js"></script>
-  <script src="/js/settings.js"></script>
+  <script type="module" src="/js/common.js"></script>
+  <script type="module" src="/js/settings.js"></script>
 </body>
 </html>
