@@ -1,6 +1,6 @@
 {
   "name": "unraid-dashboard",
-  "version": "0.3.8b",
+  "version": "0.3.9",
   "private": true,
   "type": "module",
   "scripts": {
