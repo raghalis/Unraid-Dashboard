@@ -2,7 +2,6 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import nocache from 'nocache';
-import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 import {
@@ -71,83 +70,36 @@ app.use((req, res, next) => {
 });
 
 /* --------------------------- Health & Version ----------------------------- */
-/* These must NOT be behind auth */
 app.get('/health', (_req, res) => res.status(200).send('ok'));
 app.get('/version', (_req, res) => res.json({ version: APPVER }));
 
 /* ------------------------------ Static UI -------------------------------- */
-/* UI must NOT be behind auth */
 app.use('/', express.static(CLIENT_DIR));
 
-/* -------------------------------- CSRF ----------------------------------- */
-/* Only enforce CSRF for mutating API requests */
-const CSRF_NAME = 'ucp_csrf';
-const CSRF      = process.env.CSRF_SECRET || crypto.randomBytes(16).toString('hex');
-function getCookie(req, name) {
-  const raw = req.headers.cookie || '';
-  const m = raw.match(new RegExp('(?:^|; )' + name + '=([^;]+)'));
-  return m ? decodeURIComponent(m[1]) : '';
-}
-app.use((req, res, next) => {
-  const secure = (req.protocol === 'https') ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `${CSRF_NAME}=${encodeURIComponent(CSRF)}; Path=/; SameSite=Lax${secure}`);
-  if (req.method !== 'GET' && req.path.startsWith('/api/')) {
-    const cookieTok = getCookie(req, CSRF_NAME);
-    const headerTok = req.headers['x-csrf-token'] || '';
-    if (!(cookieTok && headerTok && cookieTok === headerTok)) {
-      warn('csrf.fail', { path: req.path, hasCookie: !!cookieTok, hasHeader: !!headerTok });
-      return res.status(403).json({ ok:false, error:'Bad CSRF', message:'Refresh and retry.' });
-    }
-  }
-  next();
-});
-
-/* ----------------------------- Basic Auth -------------------------------- */
-/* Apply ONLY to /api/* and ONLY if both env vars are set */
-const USER = process.env.BASIC_AUTH_USER || '';
-const PASS = process.env.BASIC_AUTH_PASS || '';
-if (USER && PASS) {
-  const basicAuth = async (req, res, next) => {
-    const hdr = req.headers.authorization || '';
-    if (!hdr.startsWith('Basic ')) {
-      res.set('WWW-Authenticate', 'Basic realm="Unraid Control"');
-      return res.status(401).send('Authentication required.');
-    }
-    const b64 = hdr.slice(6);
-    const [u, p] = Buffer.from(b64, 'base64').toString('utf8').split(':');
-    if (u === USER && p === PASS) return next();
-    res.set('WWW-Authenticate', 'Basic realm="Unraid Control"');
-    return res.status(401).send('Authentication required.');
-  };
-  app.use('/api', basicAuth);
-}
-
 /* --------------------------- API helpers --------------------------------- */
-const OK = (res, payload) => Array.isArray(payload) ? res.json(payload) : res.json({ ok:true, ...payload });
+const OK   = (res, payload) => Array.isArray(payload) ? res.json(payload) : res.json({ ok:true, ...payload });
 const FAIL = (res, status, message, details) => res.status(status).json({ ok:false, error:message, message, details });
 
-/* ------------------------------- API ------------------------------------- */
-/* Resilient servers endpoint */
+/* -------------------------------- API ------------------------------------ */
+/* Servers list – resilient: one bad host doesn’t break the whole response */
 app.get('/api/servers', async (_req, res) => {
   const hosts = listHosts();
   const settled = await Promise.allSettled(
     hosts.map(async (h) => {
       try {
         const st = await getHostStatus(h.baseUrl);
-        // Normalize: never return undefined fields
-        const normalized = {
+        return {
           name: h.name,
           baseUrl: h.baseUrl,
           mac: h.mac,
           status: st?.status || { code: (st?.ok === false ? 'offline' : 'ok'), label: (st?.ok === false ? 'Offline' : 'OK') },
-          metrics: st?.metrics || {
-            cpuPct: st?.cpuPct ?? null,
-            ramPct: st?.ramPct ?? null,
-            storagePct: st?.storagePct ?? null
+          metrics: {
+            cpuPct: st?.metrics?.cpuPct ?? st?.cpuPct ?? null,
+            ramPct: st?.metrics?.ramPct ?? st?.ramPct ?? null,
+            storagePct: st?.metrics?.storagePct ?? st?.storagePct ?? null
           },
           error: st?.ok === false ? (st?.error || 'Unknown error') : null
         };
-        return normalized;
       } catch (e) {
         warn('status.partial', { base: h.baseUrl, err: String(e?.message || e) });
         return {
@@ -171,13 +123,13 @@ app.get('/api/servers', async (_req, res) => {
   );
 
   info('servers.list', { count: result.length });
-  OK(res, result); // Note: returns an array (unchanged contract for the UI)
+  OK(res, result); // array
 });
 
 /* Containers */
 app.get('/api/host/docker', async (req, res) => {
   const base = String(req.query.base || '');
-  try { const items = await listContainers(base); OK(res, items); } // array
+  try { const items = await listContainers(base); OK(res, items); }
   catch (e) { error('docker.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list containers.'); }
 });
 app.post('/api/host/docker/action', async (req, res) => {
@@ -190,7 +142,7 @@ app.post('/api/host/docker/action', async (req, res) => {
 /* VMs */
 app.get('/api/host/vms', async (req, res) => {
   const base = String(req.query.base || '');
-  try { const items = await listVMs(base); OK(res, items); } // array
+  try { const items = await listVMs(base); OK(res, items); }
   catch (e) { error('vms.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list VMs.'); }
 });
 app.post('/api/host/vm/action', async (req, res) => {
@@ -200,7 +152,7 @@ app.post('/api/host/vm/action', async (req, res) => {
   catch (e) { error('vm.action', { base, id, action, err: String(e) }); FAIL(res, 502, `VM ${action} failed: ${e.message}`); }
 });
 
-/* Power: WOL only (clickable Offline bubble) */
+/* Power: WOL (clickable when status shows Offline) */
 app.post('/api/host/wake', async (req, res) => {
   const { baseUrl } = req.body || {};
   const host = listHosts().find(h => h.baseUrl === baseUrl);
