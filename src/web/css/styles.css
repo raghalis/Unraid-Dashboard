@@ -60,3 +60,48 @@ input[type="checkbox"]{width:auto}
 
 /* small tweak for “muted” text block in webpage tab */
 .muted{color:var(--muted)}
+/* Base layout stays the same... */
+
+.settings-layout{
+  display:grid;
+  grid-template-columns: 240px 1fr;
+  gap:16px;
+}
+.settings-sidebar{
+  background:#101a2b;
+  border:1px solid #22324b;
+  border-radius:14px;
+  padding:10px;
+  position:sticky; top:84px;
+  height:fit-content;
+}
+.sidebar-title{font-weight:600; opacity:.9; margin:6px 8px 8px}
+.sideitem{
+  display:block; width:100%; text-align:left;
+  background:#14233a; color:#e8f1ff;
+  border:1px solid #22324b; border-radius:10px;
+  padding:10px 12px; margin:8px 0; cursor:pointer;
+}
+.sideitem.active{background:#1d2d4b; border-color:#2f4a78}
+
+.settings-content{min-width:0} /* prevent overflow */
+
+.setting-pane{display:none}
+.setting-pane.active{display:block}
+
+/* Responsive table labels on small screens */
+.table.responsive td[data-col]:before{
+  content:attr(data-col);
+  display:none; font-weight:600; margin-right:8px; opacity:.8;
+}
+@media (max-width: 720px){
+  .settings-layout{grid-template-columns: 1fr}
+  .settings-sidebar{position:static}
+  .table.responsive thead{display:none}
+  .table.responsive tr{display:block; padding:10px 0; border-top:1px solid #22324b}
+  .table.responsive td{display:flex; justify-content:space-between; padding:6px 0}
+  .table.responsive td[data-col]:before{display:inline}
+}
+
+/* Small tweaks */
+.muted{color:var(--muted)}
