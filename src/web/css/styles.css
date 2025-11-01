@@ -142,3 +142,16 @@ input::placeholder { color:#7f97c1 }
   .table td:nth-child(2){ width:auto; }
   .meter{ flex:1; max-width:260px; margin-left:10px; }
 }
+/* ...keep the previous file I gave you and ADD/ADJUST the bits below... */
+
+/* Ensure meter blocks align the same in table cells */
+.meter-wrap { display:flex; align-items:center; justify-content:flex-start; }
+.table td .meter { min-width:140px; max-width:420px; }
+
+/* Mobile alignment stays flexible */
+@media (max-width:820px){
+  .meter { flex:1; max-width:none; margin-left:10px; }
+}
+
+/* Remove big “section buttons” style if any existed (safe no-op) */
+.section-buttons { display:none !important; }
