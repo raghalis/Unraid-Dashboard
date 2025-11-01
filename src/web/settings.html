@@ -12,63 +12,80 @@
     <nav><a href="/">Dashboard</a><a href="/settings" class="active">Settings</a><span id="ver" class="ver"></span></nav>
   </header>
 
-  <main class="container">
+  <main class="container settings-layout">
+    <!-- Sidebar (Sonarr-style) -->
+    <aside class="settings-sidebar" id="settingsNav">
+      <div class="sidebar-title">Settings</div>
+      <button class="sideitem active" data-target="hosts">Host Settings</button>
+      <button class="sideitem" data-target="app">App Settings</button>
+      <button class="sideitem" data-target="web">Webpage Settings</button>
+      <!-- room for future growth -->
+    </aside>
 
-    <!-- Tabs -->
-    <div class="tabs">
-      <button class="tab active" data-tab="hosts">Host Settings</button>
-      <button class="tab" data-tab="app">App Settings</button>
-      <button class="tab" data-tab="web">Webpage Settings</button>
-    </div>
+    <!-- Content -->
+    <section class="settings-content">
+      <!-- HOSTS -->
+      <section class="panel setting-pane active" id="pane-hosts">
+        <h2>Add / Update Server</h2>
+        <form id="hostForm" class="grid">
+          <input id="oldBaseUrl" type="hidden" />
+          <label>Server Name
+            <input id="name" required />
+          </label>
+          <label>Server Address
+            <input id="baseUrl" placeholder="https://192.168.1.3" required />
+          </label>
+          <label>MAC (AA:BB:CC:DD:EE:FF)
+            <input id="mac" placeholder="BC:30:5B:E9:60:D9" required />
+          </label>
+          <label>API Token
+            <input id="token" placeholder="Paste Unraid API token" type="password" />
+          </label>
+          <div class="actions">
+            <button class="btn" type="submit">Save Host</button>
+          </div>
+        </form>
+        <p class="tip">Token tip: create an API token with Docker/VM/System permissions. For self-signed HTTPS, set <code>UNRAID_ALLOW_SELF_SIGNED=true</code>.</p>
 
-    <!-- HOSTS TAB -->
-    <section class="panel tabpane active" id="tab-hosts">
-      <h2>Add / Update Server</h2>
-      <form id="hostForm" class="grid">
-        <input id="oldBaseUrl" type="hidden" />
-        <label>Server Name<input id="name" required></label>
-        <label>Server Address<input id="baseUrl" placeholder="https://192.168.1.3" required></label>
-        <label>MAC (AA:BB:CC:DD:EE:FF)<input id="mac" placeholder="BC:30:5B:E9:60:D9" required></label>
-        <label>API Token<input id="token" placeholder="Paste Unraid API token" type="password" /></label>
-        <div class="actions">
-          <button class="btn" type="submit">Save Host</button>
+        <h2>Saved Hosts</h2>
+        <table class="table responsive">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Server Address</th>
+              <th>MAC</th>
+              <th>Token</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="hosts-body"></tbody>
+        </table>
+      </section>
+
+      <!-- APP -->
+      <section class="panel setting-pane" id="pane-app">
+        <h2>App Settings</h2>
+        <div class="grid">
+          <label>Auto-refresh (seconds, ≥ 5)
+            <input id="refreshSeconds" type="number" min="5" step="1" value="30" />
+          </label>
+          <label>Log level
+            <select id="logLevel">
+              <option>error</option><option>warn</option><option selected>info</option><option>debug</option>
+            </select>
+          </label>
+          <label class="chk"><input type="checkbox" id="debugHttp"> Show debug HTTP context in logs</label>
+          <label class="chk"><input type="checkbox" id="allowSelfSigned"> Allow self-signed TLS</label>
+          <div class="actions"><button id="saveApp" class="btn">Save Settings</button></div>
         </div>
-      </form>
-      <p class="tip">Token tip: create an API token with Docker/VM/System permissions. For self-signed HTTPS, set <code>UNRAID_ALLOW_SELF_SIGNED=true</code>.</p>
+      </section>
 
-      <h2>Saved Hosts</h2>
-      <table class="table">
-        <thead>
-          <tr><th>Name</th><th>Server Address</th><th>MAC</th><th>Token</th><th>Actions</th></tr>
-        </thead>
-        <tbody id="hosts-body"></tbody>
-      </table>
+      <!-- WEB -->
+      <section class="panel setting-pane" id="pane-web">
+        <h2>Webpage Settings</h2>
+        <p class="muted">Placeholder for theme, accent color, footer text, etc. The section is wired so you can add fields later without reworking layout.</p>
+      </section>
     </section>
-
-    <!-- APP TAB -->
-    <section class="panel tabpane" id="tab-app">
-      <h2>App Settings</h2>
-      <div class="grid">
-        <label>Auto-refresh (seconds, ≥ 5)
-          <input id="refreshSeconds" type="number" min="5" step="1" value="30" />
-        </label>
-        <label>Log level
-          <select id="logLevel">
-            <option>error</option><option>warn</option><option selected>info</option><option>debug</option>
-          </select>
-        </label>
-        <label class="chk"><input type="checkbox" id="debugHttp"> Show debug HTTP context in logs</label>
-        <label class="chk"><input type="checkbox" id="allowSelfSigned"> Allow self-signed TLS</label>
-        <div class="actions"><button id="saveApp" class="btn">Save Settings</button></div>
-      </div>
-    </section>
-
-    <!-- WEBPAGE TAB (placeholder for theming/branding) -->
-    <section class="panel tabpane" id="tab-web">
-      <h2>Webpage Settings</h2>
-      <p class="muted">Coming soon: theme (light/dark/auto), accent color, footer toggles, and custom banner text. Hook up anything you want here—we've scaffolded the tab so you won’t need to redesign later.</p>
-    </section>
-
   </main>
 
   <script type="module" src="/js/common.js"></script>
