@@ -1,13 +1,7 @@
 import { q, qa, val, setVal, toast, buildShell } from './common.js';
 
 function initTabs(){
-  const buttons = qa('[data-tab]');
-  const panes = qa('.tabpane');
-  const show = id => {
-    panes.forEach(p=>p.classList.toggle('active', p.id === `tab-${id}`));
-    q(`#tab-${id}`)?.scrollIntoView({ behavior:'smooth', block:'start' });
-  };
-  buttons.forEach(b=>b.onclick = () => show(b.dataset.tab));
+  // simple anchors or future tabs; no top “section buttons” anymore
 }
 
 async function refreshHosts(){
@@ -39,7 +33,7 @@ async function refreshHosts(){
     tr.querySelector('[data-act="edit"]').onclick = ()=>{
       setVal('#name', h.name); setVal('#baseUrl', h.baseUrl);
       setVal('#mac', h.mac); setVal('#oldBaseUrl', h.baseUrl);
-      q('#name').focus(); q('#tab-hosts').scrollIntoView({ behavior:'smooth', block:'start' });
+      q('#name').focus();
     };
     tbody.appendChild(tr);
   });
@@ -48,19 +42,19 @@ async function refreshHosts(){
 async function loadAppSettings(){
   try{
     const r = await fetch('/api/app'); const j = await r.json();
-    setVal('#refreshSeconds', Math.max(5, Number(j?.settings?.refreshSeconds) || 5));
+    setVal('#refreshSeconds', Math.max(1, Number(j?.settings?.refreshSeconds) || 2)); // default 2
     setVal('#logLevel', j?.settings?.logLevel ?? 'info');
     q('#debugHttp').checked = !!j?.settings?.debugHttp;
     q('#allowSelfSigned').checked = !!j?.settings?.allowSelfSigned;
   }catch{
-    setVal('#refreshSeconds', 5);
+    setVal('#refreshSeconds', 2);
     setVal('#logLevel','info');
     q('#debugHttp').checked = false;
   }
 }
 async function saveAppSettings(){
   const body = {
-    refreshSeconds: Math.max(5, Number(val('#refreshSeconds')) || 5),
+    refreshSeconds: Math.max(1, Number(val('#refreshSeconds')) || 2),
     logLevel: val('#logLevel'),
     debugHttp: q('#debugHttp').checked,
     allowSelfSigned: q('#allowSelfSigned').checked
