@@ -2,7 +2,7 @@ import fetch from 'node-fetch';
 import https from 'https';
 import { getToken, getAppSettings } from '../store/configStore.js';
 
-/* ========================= TLS & helpers ========================= */
+/* ============================ helpers ============================ */
 
 function agentFor(urlString) {
   const u = new URL(urlString);
@@ -30,7 +30,7 @@ async function httpJSON(endpoint, opts) {
   return { ok: res.ok, status: res.status, json };
 }
 
-/* ============================ GraphQL core ============================= */
+/* ============================ GraphQL core ============================ */
 
 async function gql(baseUrl, query, variables = {}) {
   const token = getToken(baseUrl);
@@ -64,16 +64,38 @@ async function tryQueries(baseUrl, variants, variables) {
   let lastErr;
   for (const q of variants) {
     try { return await gql(baseUrl, q, variables); }
-    catch (e) { lastErr = e; if (!e._validation) break; }
+    catch (e) {
+      lastErr = e;
+      // stop only on non-schema problems; keep trying on “cannot query field …”
+      if (!e._validation) break;
+    }
   }
   throw lastErr;
 }
 
-/* ======================== Query variants (adaptive) ===================== */
+/* ========================= adaptive query sets ========================== */
 
 const Q_INFO_ARRAY = [
-  `query { info { os { distro release uptime } } array { state capacity { used total } } }`,
-  `query { system { hostname osVersion uptime } array { status capacity { used total } } }`
+  // Newer schema
+  `query {
+    info { os { distro release uptime } }
+    array { state capacity { used total } }
+  }`,
+  // Older names
+  `query {
+    system { hostname osVersion uptime }
+    array { status capacity { used total } }
+  }`,
+  // “free/total” variant
+  `query {
+    info { os { distro release uptime } }
+    array { state capacity { free total } }
+  }`,
+  // “size*” variant
+  `query {
+    info { os { distro release uptime } }
+    array { state capacity { sizeUsed sizeTotal } }
+  }`
 ];
 
 const Q_DOCKERS = [
@@ -88,76 +110,115 @@ const Q_VMS = [
 
 const Q_METRICS = [
   `query { metrics { cpu { percentTotal } memory { percentTotal } } }`,
-  `query { info { versions { id } } }` // harmless fallback (we'll treat as n/a)
+  // Fallback that always exists (we'll treat metrics as N/A)
+  `query { info { versions { id } } }`
 ];
 
-/* ============================ Public functions ========================== */
+/* ============================== public API ============================== */
 
+/**
+ * getHostStatus is now resilient:
+ * - Fetches sections in parallel
+ * - Any section may fail; we still return others
+ * - Returns { ok:true, data, warnings:[] } if at least one succeeded
+ */
 export async function getHostStatus(baseUrl) {
-  try {
-    const sys = await tryQueries(baseUrl, Q_INFO_ARRAY);
+  const warnings = [];
+  const sections = {
+    system: null, docker: null, vms: null, metrics: null
+  };
 
-    // normalize info/system
-    let hostname='(Unraid)', osVersion='', uptime=null, arrayStatus='';
-    let used=null,total=null;
-    if (sys.info?.os) {
-      hostname = sys.info.os.distro || hostname;
-      osVersion = sys.info.os.release || osVersion;
-      uptime = sys.info.os.uptime ?? uptime;
-    } else if (sys.system) {
-      hostname = sys.system.hostname || hostname;
-      osVersion = sys.system.osVersion || osVersion;
-      uptime = sys.system.uptime ?? uptime;
-    }
-    const arrObj = sys.array || {};
-    arrayStatus = arrObj.state || arrObj.status || '';
-    used = arrObj.capacity?.used ?? null;
-    total = arrObj.capacity?.total ?? null;
-    const storagePct = (used && total) ? Math.round((used/total)*100) : null;
+  const tasks = {
+    infoArray: (async () => {
+      const sys = await tryQueries(baseUrl, Q_INFO_ARRAY);
 
-    // containers
-    const dock = await tryQueries(baseUrl, Q_DOCKERS);
-    let containers = [];
-    if (dock.docker?.containers) containers = dock.docker.containers;
-    else if (dock.docker?.list) containers = dock.docker.list;
-
-    const mapped = containers.map(c => ({
-      id: c.id,
-      name: Array.isArray(c.names) ? (c.names[0] || c.id) : (c.name || c.id),
-      image: c.image || '',
-      state: c.state || (String(c.status || '').toLowerCase().includes('up') ? 'running' : 'stopped')
-    }));
-    const running = mapped.filter(c => String(c.state).toLowerCase() === 'running').length;
-
-    // vms
-    let vCount = 0, vRun = 0;
-    try {
-      const v = await tryQueries(baseUrl, Q_VMS);
-      const domains = v?.vms?.domains || [];
-      vCount = domains.length;
-      vRun = domains.filter(d => String(d.state).toLowerCase() === 'running').length;
-    } catch { /* optional */ }
-
-    // metrics
-    let cpuPct = null, ramPct = null;
-    try {
-      const m = await tryQueries(baseUrl, Q_METRICS);
-      cpuPct = Math.round(m?.metrics?.cpu?.percentTotal ?? null);
-      ramPct = Math.round(m?.metrics?.memory?.percentTotal ?? null);
-    } catch { /* optional */ }
-
-    return {
-      ok: true,
-      data: {
-        system: { hostname, osVersion, uptime, array: { status: arrayStatus, storagePct } },
-        docker: { running, total: mapped.length },
-        vms: { running: vRun, total: vCount },
-        metrics: { cpuPct, ramPct, storagePct }
+      let hostname='(Unraid)', osVersion='', uptime=null;
+      if (sys.info?.os) {
+        hostname = sys.info.os.distro || hostname;
+        osVersion = sys.info.os.release || osVersion;
+        uptime = sys.info.os.uptime ?? uptime;
+      } else if (sys.system) {
+        hostname = sys.system.hostname || hostname;
+        osVersion = sys.system.osVersion || osVersion;
+        uptime = sys.system.uptime ?? uptime;
       }
-    };
-  } catch (e) {
-    return { ok: false, error: e.message || String(e) };
-  }
+
+      const arrObj = sys.array || {};
+      const arrayStatus = arrObj.state || arrObj.status || '';
+
+      // Capacity variants: used/total | free/total | sizeUsed/sizeTotal
+      let used = arrObj.capacity?.used ?? arrObj.capacity?.sizeUsed ?? null;
+      let total = arrObj.capacity?.total ?? arrObj.capacity?.sizeTotal ?? null;
+      if ((used == null || total == null) && arrObj.capacity?.free != null && arrObj.capacity?.total != null) {
+        // compute used from free/total when provided
+        used = (arrObj.capacity.total - arrObj.capacity.free);
+        total = arrObj.capacity.total;
+      }
+      const storagePct = (used != null && total) ? Math.round((used / total) * 100) : null;
+
+      sections.system = { hostname, osVersion, uptime, array: { status: arrayStatus, storagePct } };
+    })(),
+
+    docker: (async () => {
+      const dock = await tryQueries(baseUrl, Q_DOCKERS);
+      let containers = [];
+      if (dock.docker?.containers) containers = dock.docker.containers;
+      else if (dock.docker?.list) containers = dock.docker.list;
+
+      const mapped = containers.map(c => ({
+        id: c.id,
+        name: Array.isArray(c.names) ? (c.names[0] || c.id) : (c.name || c.id),
+        image: c.image || '',
+        state: c.state || (String(c.status || '').toLowerCase().includes('up') ? 'running' : 'stopped')
+      }));
+      const running = mapped.filter(c => String(c.state).toLowerCase() === 'running').length;
+      sections.docker = { running, total: mapped.length };
+    })(),
+
+    vms: (async () => {
+      try {
+        const v = await tryQueries(baseUrl, Q_VMS);
+        const domains = v?.vms?.domains || [];
+        const running = domains.filter(d => String(d.state).toLowerCase() === 'running').length;
+        sections.vms = { running, total: domains.length };
+      } catch (e) {
+        // VM schema missing on some builds — not a hard error
+        warnings.push(`VMs: ${e.message}`);
+      }
+    })(),
+
+    metrics: (async () => {
+      try {
+        const m = await tryQueries(baseUrl, Q_METRICS);
+        const cpuPct = (m?.metrics?.cpu?.percentTotal != null)
+          ? Math.round(m.metrics.cpu.percentTotal) : null;
+        const ramPct = (m?.metrics?.memory?.percentTotal != null)
+          ? Math.round(m.metrics.memory.percentTotal) : null;
+        // storage from system (filled by infoArray if present)
+        sections.metrics = { cpuPct, ramPct };
+      } catch (e) {
+        warnings.push(`Metrics: ${e.message}`);
+      }
+    })()
+  };
+
+  // execute and collect partial failures
+  const results = await Promise.allSettled(Object.values(tasks));
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      const names = Object.keys(tasks);
+      warnings.push(`${names[i]}: ${r.reason?.message || String(r.reason)}`);
+    }
+  });
+
+  // compute storagePct from system if present
+  const storagePct = sections.system?.array?.storagePct ?? null;
+  if (sections.metrics) sections.metrics.storagePct = storagePct;
+
+  const anySuccess = !!(sections.system || sections.docker || sections.vms || sections.metrics);
+  if (!anySuccess) return { ok: false, error: warnings[0] || 'All queries failed' };
+
+  return { ok: true, data: sections, warnings };
 }
 
 export async function listContainers(baseUrl) {
@@ -176,10 +237,12 @@ export async function listVMs(baseUrl) {
     const d = await tryQueries(baseUrl, Q_VMS);
     const arr = d?.vms?.domains || [];
     return arr.map(v => ({ id: v.id, name: v.name, state: v.state }));
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
-/* ----------------------- Mutations with fallbacks ----------------------- */
+/* ----------------------- mutations (unchanged) ----------------------- */
 
 async function tryMutations(baseUrl, variants, variablesList) {
   let lastErr;
