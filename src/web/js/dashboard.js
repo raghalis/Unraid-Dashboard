@@ -11,10 +11,10 @@ function meterHTML(label, value){
 
 function rowToHtml(s){
   const addr = s.baseUrl || '';
-  const array = s?.status?.system?.array?.status || '—';
-  const cpu = s?.status?.metrics?.cpuPct ?? s?.status?.cpuPct;
-  const ram = s?.status?.metrics?.ramPct ?? s?.status?.ramPct;
-  const sto = s?.status?.metrics?.storagePct ?? s?.status?.storagePct;
+  const array = (s?.status?.system?.array?.status) || '—';
+  const cpu = s?.status?.metrics?.cpuPct ?? null;
+  const ram = s?.status?.metrics?.ramPct ?? null;
+  const sto = s?.status?.metrics?.storagePct ?? null;
   const ok = s?.status ? 'OK' : '—';
 
   return `
@@ -22,9 +22,9 @@ function rowToHtml(s){
       <td data-label="Name">${s.name || '—'}</td>
       <td data-label="Server Address"><a href="${addr}" target="_blank" rel="noreferrer">${addr}</a></td>
       <td data-label="Array">${array}</td>
-      <td data-label="CPU%">${meterHTML('CPU', cpu)}</td>
-      <td data-label="RAM%">${meterHTML('RAM', ram)}</td>
-      <td data-label="Storage%">${meterHTML('Storage', sto)}</td>
+      <td data-label="CPU%"><div class="meter-wrap">${meterHTML('CPU', cpu)}</div></td>
+      <td data-label="RAM%"><div class="meter-wrap">${meterHTML('RAM', ram)}</div></td>
+      <td data-label="Storage%"><div class="meter-wrap">${meterHTML('Storage', sto)}</div></td>
       <td data-label="Status"><span class="pill ${s.status ? 'ok':'bad'}">${ok}</span></td>
     </tr>`;
 }
@@ -42,9 +42,9 @@ async function load(){
 async function schedule(){
   try{
     const r = await fetch('/api/app'); const j = await r.json();
-    const sec = Math.max(5, Number(j?.settings?.refreshSeconds) || 5);
+    const sec = Math.max(1, Number(j?.settings?.refreshSeconds) || 2); // allow 1s, default 2s
     setInterval(load, sec*1000);
-  }catch{ setInterval(load, 5000); }
+  }catch{ setInterval(load, 2000); }
 }
 
 window.addEventListener('DOMContentLoaded', async ()=>{
