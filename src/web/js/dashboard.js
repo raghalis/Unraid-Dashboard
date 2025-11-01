@@ -1,8 +1,12 @@
 import { q, toast, buildShell } from './common.js';
 
-function percent(v){
-  if (v == null || isNaN(v)) return '—';
-  return `${Math.round(Number(v))}%`;
+function pct(v){ if (v == null || isNaN(v)) return 0; return Math.max(0, Math.min(100, Math.round(Number(v)))); }
+function meterHTML(label, value){
+  const p = pct(value);
+  return `<div class="meter" aria-label="${label}" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100">
+            <div class="fill" style="width:${p}%"></div>
+            <span class="val">${p}%</span>
+          </div>`;
 }
 
 function rowToHtml(s){
@@ -18,9 +22,9 @@ function rowToHtml(s){
       <td data-label="Name">${s.name || '—'}</td>
       <td data-label="Server Address"><a href="${addr}" target="_blank" rel="noreferrer">${addr}</a></td>
       <td data-label="Array">${array}</td>
-      <td data-label="CPU%">${percent(cpu)}</td>
-      <td data-label="RAM%">${percent(ram)}</td>
-      <td data-label="Storage%">${percent(sto)}</td>
+      <td data-label="CPU%">${meterHTML('CPU', cpu)}</td>
+      <td data-label="RAM%">${meterHTML('RAM', ram)}</td>
+      <td data-label="Storage%">${meterHTML('Storage', sto)}</td>
       <td data-label="Status"><span class="pill ${s.status ? 'ok':'bad'}">${ok}</span></td>
     </tr>`;
 }
@@ -32,17 +36,15 @@ async function load(){
     const tbody = q('#servers-body');
     if (!Array.isArray(arr)) { tbody.innerHTML=''; return; }
     tbody.innerHTML = arr.map(rowToHtml).join('');
-  }catch(e){
-    toast('Failed to load servers','bad');
-  }
+  }catch{ toast('Failed to load servers','bad'); }
 }
 
 async function schedule(){
   try{
     const r = await fetch('/api/app'); const j = await r.json();
-    const sec = Math.max(5, Number(j?.settings?.refreshSeconds) || 30);
+    const sec = Math.max(5, Number(j?.settings?.refreshSeconds) || 5);
     setInterval(load, sec*1000);
-  }catch{ setInterval(load, 30000); }
+  }catch{ setInterval(load, 5000); }
 }
 
 window.addEventListener('DOMContentLoaded', async ()=>{
