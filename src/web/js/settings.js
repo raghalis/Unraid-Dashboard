@@ -1,5 +1,20 @@
 import { q, val, setVal, toast } from './common.js';
 
+/* ------------------------ Tab handling ------------------------ */
+function initTabs(){
+  const tabs = document.querySelectorAll('.tab');
+  const panes = document.querySelectorAll('.tabpane');
+  tabs.forEach(btn=>{
+    btn.onclick = ()=>{
+      tabs.forEach(t=>t.classList.remove('active'));
+      panes.forEach(p=>p.classList.remove('active'));
+      btn.classList.add('active');
+      q(`#tab-${btn.dataset.tab}`).classList.add('active');
+    };
+  });
+}
+
+/* ----------------------- Hosts table -------------------------- */
 async function refreshHosts(){
   const r = await fetch('/api/settings/hosts'); const arr = await r.json();
   const tbody = q('#hosts-body'); tbody.innerHTML = '';
@@ -9,7 +24,7 @@ async function refreshHosts(){
       <td>${h.name}</td>
       <td>${h.baseUrl}</td>
       <td>${h.mac}</td>
-      <td>${h.tokenSet ? '<span class="pill ok">set</span>' : '<span class="pill bad">not set</span>'}</td>
+      <td>${h.tokenSet ? '<span class="pill ok">Validated</span>' : '<span class="pill bad">Not Set</span>'}</td>
       <td class="act">
         <button class="btn sm" data-act="edit">Edit</button>
         <button class="btn sm" data-act="test">Test</button>
@@ -29,11 +44,14 @@ async function refreshHosts(){
       setVal('#name', h.name); setVal('#baseUrl', h.baseUrl);
       setVal('#mac', h.mac); setVal('#oldBaseUrl', h.baseUrl);
       q('#name').focus();
+      // jump to form if user is on phone
+      document.getElementById('tab-hosts').scrollIntoView({ behavior:'smooth', block:'start' });
     };
     tbody.appendChild(tr);
   });
 }
 
+/* -------------------- App settings load/save ------------------ */
 async function loadAppSettings(){
   const r = await fetch('/api/app'); const j = await r.json();
   setVal('#refreshSeconds', j?.settings?.refreshSeconds ?? 30);
@@ -41,7 +59,6 @@ async function loadAppSettings(){
   q('#debugHttp').checked = !!j?.settings?.debugHttp;
   q('#allowSelfSigned').checked = !!j?.settings?.allowSelfSigned;
 }
-
 async function saveAppSettings(){
   const body = {
     refreshSeconds: Number(val('#refreshSeconds')),
@@ -54,6 +71,7 @@ async function saveAppSettings(){
   j.ok ? toast('Settings saved','ok') : toast(j.message || 'Save failed','bad');
 }
 
+/* ------------------------- Save host -------------------------- */
 async function saveHost(ev){
   ev.preventDefault();
   const payload = {
@@ -74,7 +92,9 @@ async function saveHost(ev){
   }
 }
 
+/* ------------------------ bootstrap -------------------------- */
 window.addEventListener('DOMContentLoaded', async ()=>{
+  initTabs();
   await loadAppSettings();
   await refreshHosts();
   q('#hostForm').addEventListener('submit', saveHost);
