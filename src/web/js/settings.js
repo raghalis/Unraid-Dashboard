@@ -1,18 +1,15 @@
 import { q, qa, val, setVal, toast, buildShell } from './common.js';
 
-/* Simple local tab switcher (and buttons at the top) */
 function initTabs(){
   const buttons = qa('[data-tab]');
   const panes = qa('.tabpane');
   const show = id => {
     panes.forEach(p=>p.classList.toggle('active', p.id === `tab-${id}`));
-    // scroll to content top on mobile
     q(`#tab-${id}`)?.scrollIntoView({ behavior:'smooth', block:'start' });
   };
   buttons.forEach(b=>b.onclick = () => show(b.dataset.tab));
 }
 
-/* -------- Hosts table -------- */
 async function refreshHosts(){
   const r = await fetch('/api/settings/hosts');
   const arr = await r.json();
@@ -48,17 +45,22 @@ async function refreshHosts(){
   });
 }
 
-/* -------- App settings load/save -------- */
 async function loadAppSettings(){
-  const r = await fetch('/api/app'); const j = await r.json();
-  setVal('#refreshSeconds', j?.settings?.refreshSeconds ?? 30);
-  setVal('#logLevel', j?.settings?.logLevel ?? 'info');
-  q('#debugHttp').checked = !!j?.settings?.debugHttp;
-  q('#allowSelfSigned').checked = !!j?.settings?.allowSelfSigned;
+  try{
+    const r = await fetch('/api/app'); const j = await r.json();
+    setVal('#refreshSeconds', Math.max(5, Number(j?.settings?.refreshSeconds) || 5));
+    setVal('#logLevel', j?.settings?.logLevel ?? 'info');
+    q('#debugHttp').checked = !!j?.settings?.debugHttp;
+    q('#allowSelfSigned').checked = !!j?.settings?.allowSelfSigned;
+  }catch{
+    setVal('#refreshSeconds', 5);
+    setVal('#logLevel','info');
+    q('#debugHttp').checked = false;
+  }
 }
 async function saveAppSettings(){
   const body = {
-    refreshSeconds: Math.max(5, Number(val('#refreshSeconds')) || 30),
+    refreshSeconds: Math.max(5, Number(val('#refreshSeconds')) || 5),
     logLevel: val('#logLevel'),
     debugHttp: q('#debugHttp').checked,
     allowSelfSigned: q('#allowSelfSigned').checked
@@ -71,7 +73,6 @@ async function saveAppSettings(){
   j.ok ? toast('Settings saved','ok') : toast(j.message || 'Save failed','bad');
 }
 
-/* -------- Save host (validates before commit) -------- */
 async function saveHost(ev){
   ev.preventDefault();
   const payload = {
@@ -95,7 +96,6 @@ async function saveHost(ev){
   }
 }
 
-/* -------- Bootstrap -------- */
 window.addEventListener('DOMContentLoaded', async ()=>{
   await buildShell('settings');
   initTabs();
