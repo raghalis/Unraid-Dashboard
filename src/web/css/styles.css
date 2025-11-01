@@ -1,6 +1,5 @@
-/* ===== CSS: Unified Shell, Drawer, Tables, Mobile ===== */
+/* ===== CSS: Unified Shell, Drawer, Tables, Mobile, Meters ===== */
 
-/* Base palette (inherit your existing color tokens if present) */
 :root{
   --bg:#0b1424;
   --panel:#101d33;
@@ -14,9 +13,10 @@
   --warn:#8a6a00;
 }
 
-/* Reset-ish */
+/* Reset */
 * { box-sizing:border-box }
-html,body { margin:0; padding:0; background:var(--bg); color:var(--txt); font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial; }
+html,body { margin:0; padding:0; background:var(--bg); color:var(--txt);
+  font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial; }
 a { color: var(--txt); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
@@ -41,11 +41,8 @@ a:hover { text-decoration: underline; }
 }
 .header .hamburger span::before { top:-6px }
 .header .hamburger span::after  { top: 6px }
-
 .header .title { font-size:1.15rem; font-weight:600; letter-spacing:.2px; }
-.header .spacer { flex:1 }
-.header .topnav a { margin:0 8px; padding:6px 10px; border-radius:8px; }
-.header .topnav a.active, .header .topnav a:hover { background:#102345; }
+.header .spacer { flex:1 } /* (links removed by request) */
 
 /* ===== Drawer (Sonarr style) ===== */
 .drawer-backdrop {
@@ -58,12 +55,9 @@ a:hover { text-decoration: underline; }
 }
 .drawer.open { transform:translateX(0) }
 .drawer-backdrop.open { display:block }
-
 .drawer .brand { font-weight:700; margin:8px 4px 12px; }
 .drawer .section { margin:14px 0 6px; color:var(--txt-dim); font-size:.85rem; text-transform:uppercase; letter-spacing:.08em; }
-.drawer a {
-  display:block; padding:10px 12px; border-radius:10px; margin:2px 0; color:#e6f0ff;
-}
+.drawer a { display:block; padding:10px 12px; border-radius:10px; margin:2px 0; color:#e6f0ff; }
 .drawer a:hover, .drawer a.active { background:#132a52 }
 
 /* ===== Footer ===== */
@@ -112,10 +106,10 @@ input::placeholder { color:#7f97c1 }
 .table th, .table td { border-bottom:1px solid var(--border); padding:10px 8px; text-align:left; vertical-align:middle; }
 .table th { color:var(--txt-dim); font-weight:600; }
 .table td a { word-break:break-word; }
-.table .act { white-space:nowrap; }
+.table .act { white-space:nowrap; display:flex; gap:8px; flex-wrap:wrap; }
 
-/* Saved hosts alignment */
-.table td:nth-child(2){ width:32%; } /* Server Address column wider */
+/* Server Address wider */
+.table td:nth-child(2){ width:32%; }
 
 /* ===== Toast ===== */
 .toast {
@@ -123,6 +117,20 @@ input::placeholder { color:#7f97c1 }
   padding:10px 14px; border-radius:10px; color:#e6f0ff; box-shadow:0 8px 24px rgba(0,0,0,.35); display:none; z-index:1100;
 }
 .toast.show{ display:block }
+
+/* ===== Percentage meters ===== */
+.meter {
+  position:relative; height:16px; background:#0b1a2c; border:1px solid var(--border);
+  border-radius:999px; overflow:hidden; min-width:90px;
+}
+.meter .fill {
+  height:100%; background:linear-gradient(90deg,#2b6cd6,#55a0ff);
+  width:0%; transition:width .6s ease;
+}
+.meter .val {
+  position:absolute; inset:0; display:grid; place-items:center; font-size:.85rem; color:#e8f1ff;
+  text-shadow:0 1px 2px rgba(0,0,0,.6);
+}
 
 /* ===== Mobile ===== */
 @media (max-width:820px){
@@ -132,4 +140,5 @@ input::placeholder { color:#7f97c1 }
   .table td{ display:flex; justify-content:space-between; gap:12px; padding:6px 4px; }
   .table td::before{ content:attr(data-label); font-weight:600; color:var(--txt-dim); }
   .table td:nth-child(2){ width:auto; }
+  .meter{ flex:1; max-width:260px; margin-left:10px; }
 }
