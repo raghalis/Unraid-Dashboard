@@ -14,19 +14,15 @@ export function toast(msg, kind='ok'){
   clearTimeout(toastTimer); toastTimer = setTimeout(()=>t.classList.remove('show'), 2500);
 }
 
-/* Build sticky header + drawer + footer */
+/* Build sticky header + drawer + footer (no top links) */
 export async function buildShell(active){
-  // Header
+  // Header (hamburger + title)
   const h = document.createElement('div');
   h.className = 'header';
   h.innerHTML = `
     <div class="hamburger" id="hamb"><span></span></div>
     <div class="title">Unraid Control</div>
-    <div class="spacer"></div>
-    <div class="topnav">
-      <a href="/" ${active==='dash'?'class="active"':''}>Dashboard</a>
-      <a href="/settings" ${active==='settings'?'class="active"':''}>Settings</a>
-    </div>`;
+    <div class="spacer"></div>`;
   document.body.prepend(h);
 
   // Drawer
@@ -37,8 +33,7 @@ export async function buildShell(active){
     <div class="brand">Unraid Control</div>
     <div class="section">Pages</div>
     <a href="/" ${active==='dash'?'class="active"':''}>Dashboard</a>
-    <a href="/settings" ${active==='settings'?'class="active"':''}>Settings</a>
-  `;
+    <a href="/settings" ${active==='settings'?'class="active"':''}>Settings</a>`;
   document.body.append(backdrop, drawer);
 
   const toggle = (open)=>{ drawer.classList.toggle('open', open); backdrop.classList.toggle('open', open); };
