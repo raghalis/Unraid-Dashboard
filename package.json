@@ -1,6 +1,6 @@
 {
   "name": "unraid-dashboard",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "basic-auth": "^2.0.1",
+    "express-basic-auth": "^1.2.1",
     "express": "^4.21.1",
     "node-fetch": "^3.3.2",
     "nocache": "^4.0.0",
