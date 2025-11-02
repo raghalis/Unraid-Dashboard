@@ -1,87 +1,97 @@
-import { q, toast, buildShell } from './common.js';
+import { qs, qsa, fmtPct, pill, link } from "./common.js";
 
-const clampPct = v => (v==null||isNaN(v)) ? null : Math.max(0, Math.min(100, Math.round(Number(v))));
+const STATE = {
+  timer: null,
+  intervalSec: 5,
+  running: false,
+};
 
-function meter(label, value){
-  const p = clampPct(value);
-  if (p == null) {
-    return `<div class="meter u-muted" aria-label="${label}"><div class="track"></div><span class="val">—</span></div>`;
-  }
-  // color class by usage
-  const cls = p >= 85 ? 'hot' : (p >= 60 ? 'warn' : 'ok');
-  return `<div class="meter ${cls}" aria-label="${label}" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100">
-    <div class="track"><div class="fill" style="width:${p}%"></div></div>
-    <span class="val">${p}%</span>
-  </div>`;
+function gauge(el, pct) {
+  const bar = el.querySelector(".bar");
+  const txt = el.querySelector(".val");
+  const p = Math.max(0, Math.min(100, pct|0));
+  bar.style.width = `${p}%`;
+  // color like Unraid (green→amber→red)
+  bar.style.background = p < 60 ? "var(--ok)" : (p < 85 ? "var(--warn)" : "var(--bad)");
+  txt.textContent = `${p}%`;
 }
 
-function statusPill(entry){
-  // entry.status is {code,label} when online; otherwise entry.error exists
-  if (!entry.status && entry.error) {
-    return `<button class="pill offline" data-wake="${entry.baseUrl}">Offline</button>`;
-  }
-  const s = entry.status || { code:'unknown', label:'Unknown' };
-  const cls =
-    s.code === 'ok' ? 'ok' :
-    s.code === 'parity' ? 'warn' :
-    s.code === 'error' ? 'bad' :
-    s.code === 'stopped' ? 'neutral' :
-    'neutral';
-  return `<span class="pill ${cls}">${s.label}</span>`;
-}
+function renderHost(card, h) {
+  card.querySelector("[data-name]").textContent = h.name;
+  const addr = card.querySelector("[data-addr]");
+  addr.innerHTML = "";
+  addr.appendChild(link(h.base, h.base));
 
-function row(entry){
-  const addr = entry.baseUrl || '';
-  const cpu = entry?.status?.metrics?.cpuPct ?? entry?.metrics?.cpuPct;
-  const ram = entry?.status?.metrics?.ramPct ?? entry?.metrics?.ramPct;
-  const sto = entry?.status?.metrics?.storagePct ?? entry?.metrics?.storagePct;
+  gauge(card.querySelector("[data-cpu]"), h.cpuPct ?? 0);
+  gauge(card.querySelector("[data-ram]"), h.ramPct ?? 0);
+  gauge(card.querySelector("[data-sto]"), h.storagePct ?? 0);
 
-  return `
-    <tr>
-      <td data-label="Name">${entry.name||'—'}</td>
-      <td data-label="Server Address"><a href="${addr}" target="_blank" rel="noreferrer">${addr}</a></td>
-      <td data-label="CPU%">${meter('CPU', cpu)}</td>
-      <td data-label="RAM%">${meter('RAM', ram)}</td>
-      <td data-label="Storage%">${meter('Storage', sto)}</td>
-      <td data-label="Status">${statusPill(entry)}</td>
-    </tr>`;
-}
-
-async function load(){
-  try{
-    const r = await fetch('/api/servers');
-    const arr = await r.json();
-    const tbody = q('#servers-body');
-    tbody.innerHTML = Array.isArray(arr) ? arr.map(row).join('') : '';
-    // wire WOL buttons
-    tbody.querySelectorAll('[data-wake]').forEach(btn=>{
-      btn.addEventListener('click', async ()=>{
-        const base = btn.getAttribute('data-wake');
-        try{
-          const r = await fetch(`/api/host?action=power&base=${encodeURIComponent(base)}`, {
-            method:'POST', headers:{'content-type':'application/json'},
-            body: JSON.stringify({ action:'wake' })
-          });
-          const j = await r.json();
-          j.ok ? toast('Wake packet sent','ok') : toast(j.message || 'Wake failed','bad');
-        }catch{ toast('Wake failed','bad'); }
-      });
-    });
-  }catch{
-    toast('Failed to load servers','bad');
+  const status = card.querySelector("[data-status]");
+  status.innerHTML = "";
+  status.appendChild(pill(h.status || "OK"));
+  const wolBtn = card.querySelector("[data-wake]");
+  if (String(h.status).toLowerCase() === "offline" && h.canWake) {
+    wolBtn.style.display = "";
+    wolBtn.onclick = async () => {
+      wolBtn.disabled = true;
+      try {
+        const r = await fetch("/api/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mac: h.mac, base: h.base }) });
+        if (!r.ok) throw new Error("WOL failed");
+      } finally {
+        wolBtn.disabled = false;
+      }
+    };
+  } else {
+    wolBtn.style.display = "none";
   }
 }
 
-async function schedule(){
-  try{
-    const r = await fetch('/api/app'); const j = await r.json();
-    const sec = Math.max(1, Number(j?.settings?.refreshSeconds) || 2);
-    setInterval(load, sec*1000);
-  }catch{ setInterval(load, 2000); }
+function hostCardTemplate() {
+  const tpl = document.createElement("div");
+  tpl.className = "card";
+  tpl.innerHTML = `
+    <div class="row"><div>Name</div><div data-name>—</div></div>
+    <div class="row"><div>Server Address</div><div data-addr>—</div></div>
+    <div class="row"><div>CPU%</div>
+      <div class="meter" data-cpu><div class="bar"></div><div class="val">0%</div></div>
+    </div>
+    <div class="row"><div>RAM%</div>
+      <div class="meter" data-ram><div class="bar"></div><div class="val">0%</div></div>
+    </div>
+    <div class="row"><div>Storage%</div>
+      <div class="meter" data-sto><div class="bar"></div><div class="val">0%</div></div>
+    </div>
+    <div class="row"><div>Status</div>
+      <div class="status"><button class="btn tiny" data-wake style="display:none">Wake</button><span data-status></span></div>
+    </div>`;
+  return tpl;
 }
 
-window.addEventListener('DOMContentLoaded', async ()=>{
-  await buildShell('dash');
-  await load();
-  await schedule();
+async function loadOnce() {
+  const res = await fetch("/api/status/partial");
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const js = await res.json();
+  const wrap = qs("#servers");
+  wrap.innerHTML = "";
+  js.hosts.forEach(h => {
+    const card = hostCardTemplate();
+    wrap.appendChild(card);
+    renderHost(card, h);
+  });
+}
+
+async function startLoop() {
+  if (STATE.running) return;
+  STATE.running = true;
+  const res = await fetch("/api/app");
+  if (res.ok) {
+    const js = await res.json();
+    STATE.intervalSec = Math.max(1, Number(js?.autoRefreshSec || 5));
+  }
+  await loadOnce().catch(()=>{});
+  STATE.timer = setInterval(() => { loadOnce().catch(()=>{}); }, STATE.intervalSec * 1000);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  startLoop();
 });

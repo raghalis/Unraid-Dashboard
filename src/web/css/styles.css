@@ -180,3 +180,20 @@ input::placeholder { color:#7f97c1 }
   .meter { min-width:0; }
   .table td .meter { max-width:none; }
 }
+/* meters aligned on mobile and desktop */
+.meter{ position:relative; width:100%; height:14px; background:rgba(255,255,255,.06); border-radius:14px; overflow:hidden; display:flex; align-items:center; }
+.meter .bar{ height:100%; width:0%; background:var(--ok); transition:width .35s ease, background .2s ease; }
+.meter .val{ position:absolute; right:10px; font-variant-numeric: tabular-nums; font-weight:600; opacity:.9; }
+
+/* pills */
+.pill{ padding:4px 10px; border-radius:999px; font-weight:600; }
+.pill.ok{ background:rgba(56,142,60,.2); color:#9be7a5;}
+.pill.warn{ background:rgba(255,167,38,.18); color:#ffcc80;}
+.pill.bad{ background:rgba(239,83,80,.18); color:#ef9a9a;}
+.pill.muted{ background:rgba(200,200,200,.12); color:#aaa; }
+
+/* card rows */
+.card .row{ display:grid; grid-template-columns:minmax(120px, 140px) 1fr; gap:16px; align-items:center; padding:10px 8px; }
+@media (max-width: 480px){
+  .card .row{ grid-template-columns:minmax(96px,110px) 1fr; }
+}

@@ -1,228 +1,260 @@
-import express from 'express';
-import path from 'path';
-import fs from 'fs';
-import nocache from 'nocache';
-import { fileURLToPath } from 'url';
+/* eslint-disable no-console */
+import express from "express";
+import basicAuth from "express-basic-auth";
+import path from "path";
+import fs from "fs";
+import cors from "cors";
+import { fileURLToPath } from "url";
+import { fetchPartialStatus, testConnection, wake } from "./unraid.js";
 
-import {
-  initStore, listHosts, upsertHost, deleteHost,
-  setToken, tokensSummary
-} from './store/configStore.js';
+// ---------------------- env & constants ----------------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-import {
-  getHostStatus, listContainers, listVMs,
-  containerAction, vmAction
-} from './api/unraid.js';
+const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
+const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || "";
+const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS || "";
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "..", "data");
+const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 
-import { sendWol } from './api/wol.js';
+const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
+const DEBUG_HTTP = String(process.env.DEBUG_HTTP || "false").toLowerCase() === "true";
+const ALLOW_SELF_SIGNED = String(process.env.UNRAID_ALLOW_SELF_SIGNED || "true").toLowerCase() === "true";
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
-/* ------------------------------- Paths ---------------------------------- */
-const __dirname  = path.dirname(fileURLToPath(import.meta.url));
-const CLIENT_DIR = path.join(__dirname, 'web');
-const DATA_DIR   = '/app/data';
-fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-/* -------------------------------- Env ----------------------------------- */
-const PORT     = process.env.PORT || 8080;
-const APPVER   = process.env.npm_package_version || '0.0.0';
-const LOG_PATH = path.join(DATA_DIR, 'app.log');
+// ---------------------- tiny logger --------------------------
+const levels = ["error","warn","info","debug"];
+function now() {
+  return new Date().toLocaleString(undefined, { hour12: true, timeZone: TZ });
+}
+function log(level, msg, ctx = null) {
+  if (levels.indexOf(level) <= levels.indexOf(LOG_LEVEL)) {
+    const line = `[${now()}] ${level.toUpperCase().padEnd(5)} ${msg}`;
+    if (ctx && DEBUG_HTTP) {
+      console.log(line, ctx);
+    } else {
+      console.log(line);
+    }
+  }
+}
+const L = {
+  error: (m,c) => log("error",m,c),
+  warn:  (m,c) => log("warn",m,c),
+  info:  (m,c) => log("info",m,c),
+  debug: (m,c) => log("debug",m,c),
+};
 
-/* Optional: allow insecure TLS for self-signed targets */
-if ((process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true') {
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// ---------------------- settings io --------------------------
+function readSettings() {
+  try {
+    const raw = fs.readFileSync(SETTINGS_FILE, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {
+      app: {
+        autoRefreshSec: 5,
+        logLevel: LOG_LEVEL,
+        debugHttp: DEBUG_HTTP,
+        allowSelfSigned: ALLOW_SELF_SIGNED,
+      },
+      hosts: [],
+    };
+  }
+}
+function writeSettings(obj) {
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(obj, null, 2), "utf8");
 }
 
-/* ----------------------------- Local logger ------------------------------ */
-const LEVELS  = ['error','warn','info','debug'];
-const MIN_LVL = Math.max(0, LEVELS.indexOf((process.env.LOG_LEVEL || 'info').toLowerCase()));
-const ts      = () => new Date().toLocaleString();
-const write   = (line) => { try { fs.appendFileSync(LOG_PATH, line + '\n'); } catch {} };
-function log(level, msg, ctx = {}) {
-  if (LEVELS.indexOf(level) > MIN_LVL) return;
-  const extras = Object.entries(ctx).map(([k,v])=>{
-    try { return `${k}=${typeof v==='object' ? JSON.stringify(v) : String(v)}`; }
-    catch { return `${k}=[unserializable]`; }
-  }).join(' ');
-  const line = `[${ts()}] ${level.toUpperCase()} ${msg}${extras ? ' | ' + extras : ''}`;
-  console.log(line);
-  write(line);
-}
-const info  = (m,c)=>log('info',m,c);
-const warn  = (m,c)=>log('warn',m,c);
-const error = (m,c)=>log('error',m,c);
-const debug = (m,c)=>log('debug',m,c);
-
-/* ------------------------------ App setup -------------------------------- */
+// ---------------------- express app --------------------------
 const app = express();
-app.set('trust proxy', true);
-initStore();
+app.disable("x-powered-by");
+app.use(cors());
+app.use(express.json({ limit: "256kb" }));
+app.use(express.urlencoded({ extended: true }));
 
-app.use(express.json({ limit: '1mb' }));
-app.use(nocache());
+// Static first (no auth)
+const clientDir = path.join(__dirname, "web");
+app.use(express.static(clientDir, { index: false }));
 
-/* ---------------------------- HTTP logger -------------------------------- */
+// Public health & version — **no auth**
+app.get("/health", (req, res) => {
+  res.status(200).json({ ok: true, ts: Date.now() });
+});
+app.get("/version", (req, res) => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    res.json({ version: pkg.version });
+  } catch {
+    res.json({ version: "0.0.0" });
+  }
+});
+
+// Apply basic auth to *API* & *HTML entry points*
+// (but not to static files or health/version)
+if (BASIC_AUTH_USER && BASIC_AUTH_PASS) {
+  const auth = basicAuth({
+    users: { [BASIC_AUTH_USER]: BASIC_AUTH_PASS },
+    challenge: true,
+    unauthorizedResponse: () => "Unauthorized",
+  });
+
+  // Protect API routes
+  app.use((req, res, next) => {
+    const open = req.path === "/health" || req.path === "/version" || req.path.startsWith("/css/") || req.path.startsWith("/js/") || req.path.startsWith("/assets/");
+    if (open) return next();
+    if (req.path.startsWith("/api")) return auth(req, res, next);
+    return next();
+  });
+
+  // Protect HTML entry points (/, /dashboard, /settings)
+  const protectHtml = ["/", "/dashboard", "/settings"];
+  protectHtml.forEach(route => app.get(route, auth, (req, res, next) => next()));
+}
+
+// ---------------------- http access log (human) --------------
 app.use((req, res, next) => {
   const start = Date.now();
-  res.on('finish', () => {
-    info('http', { method: req.method, url: req.originalUrl, status: res.statusCode, ms: Date.now() - start });
+  res.on("finish", () => {
+    const ms = Date.now() - start;
+    const ctx = DEBUG_HTTP ? { method: req.method, url: req.originalUrl, status: res.statusCode, ms } : undefined;
+    L.info("http", ctx);
   });
   next();
 });
 
-/* --------------------------- Health & Version ----------------------------- */
-app.get('/health', (_req, res) => res.status(200).send('ok'));
-app.get('/version', (_req, res) => res.json({ version: APPVER }));
-
-/* ------------------------------ Static UI -------------------------------- */
-app.use('/', express.static(CLIENT_DIR));
-
-/* --------------------------- API helpers --------------------------------- */
-const OK   = (res, payload) => Array.isArray(payload) ? res.json(payload) : res.json({ ok:true, ...payload });
-const FAIL = (res, status, message, details) => res.status(status).json({ ok:false, error:message, message, details });
-
-/* -------------------------------- API ------------------------------------ */
-/* Servers list – resilient: one bad host doesn’t break the whole response */
-app.get('/api/servers', async (_req, res) => {
-  const hosts = listHosts();
-  const settled = await Promise.allSettled(
-    hosts.map(async (h) => {
-      try {
-        const st = await getHostStatus(h.baseUrl);
-        return {
-          name: h.name,
-          baseUrl: h.baseUrl,
-          mac: h.mac,
-          status: st?.status || { code: (st?.ok === false ? 'offline' : 'ok'), label: (st?.ok === false ? 'Offline' : 'OK') },
-          metrics: {
-            cpuPct: st?.metrics?.cpuPct ?? st?.cpuPct ?? null,
-            ramPct: st?.metrics?.ramPct ?? st?.ramPct ?? null,
-            storagePct: st?.metrics?.storagePct ?? st?.storagePct ?? null
-          },
-          error: st?.ok === false ? (st?.error || 'Unknown error') : null
-        };
-      } catch (e) {
-        warn('status.partial', { base: h.baseUrl, err: String(e?.message || e) });
-        return {
-          name: h.name, baseUrl: h.baseUrl, mac: h.mac,
-          status: { code:'offline', label:'Offline' },
-          metrics: { cpuPct:null, ramPct:null, storagePct:null },
-          error: e?.message || String(e)
-        };
-      }
-    })
-  );
-
-  const result = settled.map((r, i) => r.status === 'fulfilled'
-    ? r.value
-    : ({
-        name: hosts[i].name, baseUrl: hosts[i].baseUrl, mac: hosts[i].mac,
-        status: { code:'offline', label:'Offline' },
-        metrics: { cpuPct:null, ramPct:null, storagePct:null },
-        error: r.reason?.message || String(r.reason || '')
-      })
-  );
-
-  info('servers.list', { count: result.length });
-  OK(res, result); // array
+// ---------------------- API: settings ------------------------
+app.get("/api/settings/hosts", (req, res) => {
+  const s = readSettings();
+  res.json(s.hosts || []);
+});
+app.post("/api/settings/hosts", (req, res) => {
+  const { name, base, mac, token } = req.body || {};
+  if (!name || !base || !token) {
+    return res.status(400).json({ error: "name, base and token are required" });
+  }
+  const s = readSettings();
+  const exists = (s.hosts || []).find(h => h.base === base);
+  if (exists) return res.status(409).json({ error: "Host already exists" });
+  s.hosts.push({ name, base, mac: mac || "", token, addedAt: Date.now() });
+  writeSettings(s);
+  res.json({ ok: true });
+});
+app.put("/api/settings/hosts", (req, res) => {
+  const { base, patch } = req.body || {};
+  if (!base || !patch) return res.status(400).json({ error: "base and patch are required" });
+  const s = readSettings();
+  const idx = (s.hosts || []).findIndex(h => h.base === base);
+  if (idx < 0) return res.status(404).json({ error: "Host not found" });
+  s.hosts[idx] = { ...s.hosts[idx], ...patch, updatedAt: Date.now() };
+  writeSettings(s);
+  res.json({ ok: true });
+});
+app.delete("/api/settings/hosts", (req, res) => {
+  const { base } = req.query;
+  if (!base) return res.status(400).json({ error: "base required" });
+  const s = readSettings();
+  s.hosts = (s.hosts || []).filter(h => h.base !== String(base));
+  writeSettings(s);
+  res.json({ ok: true });
 });
 
-/* Containers */
-app.get('/api/host/docker', async (req, res) => {
-  const base = String(req.query.base || '');
-  try { const items = await listContainers(base); OK(res, items); }
-  catch (e) { error('docker.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list containers.'); }
+// App settings
+app.get("/api/app", (req, res) => {
+  const s = readSettings();
+  res.json(s.app || {});
 });
-app.post('/api/host/docker/action', async (req, res) => {
-  const base = String(req.query.base || '');
-  const { id, action } = req.body || {};
-  try { await containerAction(base, id, action); OK(res, {}); }
-  catch (e) { error('docker.action', { base, id, action, err: String(e) }); FAIL(res, 502, `Container ${action} failed: ${e.message}`); }
-});
-
-/* VMs */
-app.get('/api/host/vms', async (req, res) => {
-  const base = String(req.query.base || '');
-  try { const items = await listVMs(base); OK(res, items); }
-  catch (e) { error('vms.list', { base, err: String(e) }); FAIL(res, 502, 'Failed to list VMs.'); }
-});
-app.post('/api/host/vm/action', async (req, res) => {
-  const base = String(req.query.base || '');
-  const { id, action } = req.body || {};
-  try { await vmAction(base, id, action); OK(res, {}); }
-  catch (e) { error('vm.action', { base, id, action, err: String(e) }); FAIL(res, 502, `VM ${action} failed: ${e.message}`); }
+app.post("/api/app", (req, res) => {
+  const s = readSettings();
+  s.app = {
+    ...s.app,
+    ...req.body,
+  };
+  writeSettings(s);
+  L.info("app.settings", s.app);
+  res.json({ ok: true });
 });
 
-/* Power: WOL (clickable when status shows Offline) */
-app.post('/api/host/wake', async (req, res) => {
-  const { baseUrl } = req.body || {};
-  const host = listHosts().find(h => h.baseUrl === baseUrl);
-  if (!host) return FAIL(res, 404, 'Unknown host.');
+// ---------------------- API: connectivity & status -----------
+app.post("/api/test", async (req, res) => {
+  const { base, token, allowSelfSigned } = req.body || {};
   try {
-    await sendWol(host.mac, process.env.WOL_BROADCAST || '255.255.255.255', process.env.WOL_INTERFACE || 'eth0');
-    info('power.wake', { base: host.baseUrl, mac: host.mac });
-    OK(res, {});
+    const r = await testConnection({ base, token, allowSelfSigned: allowSelfSigned ?? ALLOW_SELF_SIGNED });
+    res.json(r);
   } catch (e) {
-    error('power.wake.error', { base: host.baseUrl, err: String(e) });
-    FAIL(res, 502, `Wake failed: ${e.message}`);
+    L.warn("test.failed", { base, err: String(e?.message || e) });
+    res.status(502).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-/* Settings: hosts & tokens */
-app.get('/api/settings/hosts', (_req,res) => {
-  const hosts = listHosts();
-  const tokens = tokensSummary();
-  const arr = hosts.map(h => ({ ...h, tokenSet: !!tokens[h.baseUrl] }));
-  OK(res, arr); // array
+app.get("/api/servers", async (_req, res) => {
+  const s = readSettings();
+  const hosts = s.hosts || [];
+  res.json(hosts.map(h => ({ name: h.name, base: h.base })));
 });
 
-app.post('/api/settings/host', (req,res) => {
-  try {
-    const saved = upsertHost(req.body || {});
-    info('host.upsert', { base: saved.baseUrl });
-    OK(res, { host: { ...saved, tokenSet: false } });
-  } catch (e) {
-    FAIL(res, 400, e.message || 'Invalid host data.');
-  }
-});
-
-app.delete('/api/settings/host', (req,res) => {
-  try { deleteHost(String(req.query.base || '')); OK(res, {}); }
-  catch { FAIL(res, 400, 'Failed to delete host.'); }
-});
-
-app.post('/api/settings/token', (req,res) => {
-  const { baseUrl, token } = req.body || {};
-  try { setToken(baseUrl, token); info('token.set', { base: baseUrl }); OK(res, {}); }
-  catch (e) { FAIL(res, 400, e.message || 'Failed to save token.'); }
-});
-
-app.get('/api/settings/test', async (req,res) => {
-  const base = String(req.query.base || '');
-  try {
-    const r = await getHostStatus(base);
-    if (!r || r.ok === false) {
-      const msg = r?.error || 'Test failed';
-      warn('settings.test.failed', { base, err: msg });
-      return FAIL(res, 502, msg);
+app.get("/api/status/partial", async (_req, res) => {
+  const s = readSettings();
+  const hosts = s.hosts || [];
+  L.info("servers.list", { count: hosts.length });
+  const results = await Promise.all(hosts.map(async (h) => {
+    try {
+      const stat = await fetchPartialStatus({
+        name: h.name,
+        base: h.base,
+        mac: h.mac || "",
+        token: h.token,
+        allowSelfSigned: s?.app?.allowSelfSigned ?? ALLOW_SELF_SIGNED,
+      });
+      return { ok: true, ...stat };
+    } catch (e) {
+      L.warn("status.partial", { base: h.base, error: String(e?.message || e) });
+      return {
+        ok: false,
+        name: h.name,
+        base: h.base,
+        status: "Offline",
+        cpuPct: 0,
+        ramPct: 0,
+        storagePct: 0,
+        canWake: Boolean(h.mac),
+      };
     }
-    OK(res, { system: r.data?.system || null });
+  }));
+  res.json({ hosts: results });
+});
+
+// Wake-on-LAN
+app.post("/api/wake", async (req, res) => {
+  const { mac, base } = req.body || {};
+  if (!mac) return res.status(400).json({ error: "mac required" });
+  try {
+    await wake(mac);
+    L.info("wol.sent", { base, mac });
+    res.json({ ok: true });
   } catch (e) {
-    warn('settings.test.error', { base, err: String(e) });
-    FAIL(res, 502, e?.message || 'Test failed');
+    L.error("wol.failed", { mac, err: String(e?.message || e) });
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-/* Settings UI route */
-app.get('/settings', (_req,res)=>res.sendFile(path.join(CLIENT_DIR,'settings.html')));
+// ---------------------- HTML entries -------------------------
+app.get("/", (_req, res) => res.sendFile(path.join(clientDir, "dashboard.html")));
+app.get("/dashboard", (_req, res) => res.sendFile(path.join(clientDir, "dashboard.html")));
+app.get("/settings", (_req, res) => res.sendFile(path.join(clientDir, "settings.html")));
 
-/* --------------------------- Last-chance error --------------------------- */
-app.use((err, req, res, _next) => {
-  error(err?.message || 'Unhandled error', { url: req?.originalUrl, stack: err?.stack });
-  res.status(500).json({ ok:false, message:'Internal error' });
-});
-
-/* -------------------------------- Start ---------------------------------- */
+// ---------------------- start -------------------------------
 app.listen(PORT, () => {
-  info('server.start', { port: PORT, version: APPVER, clientDir: CLIENT_DIR });
-  console.log(`Unraid Dashboard listening on :${PORT}`);
+  L.info(`server.start | port=${PORT} version=${readPackageVersion()} clientDir=${clientDir}`);
+  console.log("Unraid Dashboard listening on :", PORT);
 });
+
+function readPackageVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    return pkg.version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}

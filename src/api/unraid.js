@@ -1,269 +1,176 @@
-import fetch from 'node-fetch';
-import https from 'https';
-import { getToken } from '../store/configStore.js';
+import fetch from "node-fetch";
+import https from "https";
 
-/* ---------------- TLS + helpers ---------------- */
-const allowSelfSigned = (process.env.UNRAID_ALLOW_SELF_SIGNED || 'false') === 'true';
-const httpsAgent = new https.Agent({ rejectUnauthorized: !allowSelfSigned });
-
-function agentFor(u) {
-  const p = new URL(u).protocol;
-  return p === 'https:' ? httpsAgent : undefined;
-}
-function netHint(err) {
-  const m = String(err?.message || '').toLowerCase();
-  if (m.includes('self signed')) return 'TLS failed (self-signed). Enable UNRAID_ALLOW_SELF_SIGNED=true.';
-  if (m.includes('unauthorized') || m.includes('401')) return 'Unauthorized. Check Unraid API token.';
-  if (m.includes('econnrefused')) return 'Connection refused.';
-  if (m.includes('getaddrinfo') || m.includes('dns')) return 'DNS problem.';
-  if (m.includes('timeout')) return 'Request timed out.';
-  return null;
-}
-async function httpJSON(url, opts) {
-  let res;
-  try { res = await fetch(url, { ...opts, agent: agentFor(url) }); }
-  catch (e) { throw new Error(netHint(e) || `Network error: ${e.message}`); }
-  const text = await res.text();
-  let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-  return { ok: res.ok, status: res.status, json };
-}
-
-/* ---------------- GraphQL core (w/ schema fallbacks) ---------------- */
-async function gql(baseUrl, query, variables = {}) {
-  const token = getToken(baseUrl);
-  if (!token) throw new Error(`No API token configured for ${baseUrl}`);
-  const endpoint = new URL('/graphql', baseUrl).toString();
-  const { ok, status, json } = await httpJSON(endpoint, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'accept': 'application/json',
-      'x-api-key': token
-    },
-    body: JSON.stringify({ query, variables })
-  });
-  if (!ok) {
-    const msg = (json?.errors && json.errors[0]?.message) || `HTTP ${status}`;
-    throw new Error(`HTTP ${status} from ${endpoint}: ${msg}`);
+const agentCache = new Map();
+function getAgent(allowSelfSigned) {
+  const key = allowSelfSigned ? "insecure" : "secure";
+  if (!agentCache.has(key)) {
+    agentCache.set(key, new https.Agent({
+      rejectUnauthorized: !allowSelfSigned,
+      keepAlive: true,
+    }));
   }
-  if (json?.errors?.length) {
-    const msg = json.errors.map(e => e.message).join('; ');
-    const err = new Error(msg); err._validation = /cannot query field/i.test(msg); throw err;
+  return agentCache.get(key);
+}
+
+function authHeaders(token) {
+  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+}
+
+async function gql(base, token, query, variables, allowSelfSigned) {
+  const res = await fetch(`${base}/graphql`, {
+    method: "POST",
+    body: JSON.stringify({ query, variables }),
+    headers: authHeaders(token),
+    agent: getAgent(allowSelfSigned),
+  });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error(`GraphQL non-JSON ${res.status}`); }
+  if (!res.ok || json.errors) {
+    const msg = json?.errors?.[0]?.message || `GraphQL ${res.status}`;
+    throw new Error(msg);
   }
   return json.data;
 }
-async function tryQueries(baseUrl, variants, variables) {
-  let lastErr;
-  for (const q of variants) {
-    try { return await gql(baseUrl, q, variables); }
-    catch (e) { lastErr = e; if (!e._validation) break; }
-  }
-  throw lastErr;
-}
 
-/* ---------------- Query variants ---------------- */
+// robust parse utils
+const num = v => (typeof v === "number" && isFinite(v) ? v : 0);
+const pct = (used, total) => total > 0 ? Math.max(0, Math.min(100, Math.round((used / total) * 100))) : 0;
 
-/* System + array (state/status) */
-const Q_INFO_ARRAY = [
-  `query { info { os { distro release uptime } } array { state } }`,
-  `query { system { hostname osVersion uptime } array { status } }`
-];
-
-/* Parity / array operations (several shapes across versions) */
-const Q_PARITY = [
-  `query { array { operation { type progress state error } } }`,
-  `query { array { parityCheck { progress state error } } }`,
-  `query { array { tasks { kind progress status error } } }`,
-];
-
-/* Capacity variants */
-const Q_ARRAY_CAPACITY = [
-  `query { array { capacity { total used free } } }`,
-  `query { array { capacity { total free } } }`,
-  `query { array { size free } }`
-];
-
-/* CPU/RAM variants */
-const Q_HOST_METRICS = [
-  `query { metrics { cpu { percent } memory { percentUsed } } }`,
-  `query { host { cpuPct memoryPct } }`,
-  `query { resources { cpuPercent memPercent } }`
-];
-
-/* Docker & VMs (unchanged) */
-const Q_DOCKERS = [
-  `query { docker { containers { id names image status state autoStart } } }`,
-  `query { docker { list { id name image status state } } }`
-];
-const Q_VMS = [
-  `query { vms { domains { id name state } } }`,
-  `query { vms { domain(id:"*") { id name state } } }`
-];
-
-/* ---------------- Status classifier ---------------- */
-function classifyStatus(arrayState, parity, errText) {
-  // arrayState: 'STARTED' | 'STOPPED' | 'MAINTENANCE' | etc or undefined
-  if (errText) return { code: 'error', label: errText };
-  if (!arrayState) return { code: 'unknown', label: 'Unknown' };
-
-  // Active parity?
-  const p = parity;
-  const hasProgress = typeof p?.progress === 'number' && p.progress >= 0 && p.progress <= 100;
-  const isParityActive = /check|parity/i.test(String(p?.type || p?.state || p?.status || '')) || hasProgress;
-
-  if (String(arrayState).toUpperCase() !== 'STARTED') {
-    return { code: 'stopped', label: String(arrayState).toUpperCase() };
-  }
-  if (isParityActive) {
-    const pct = hasProgress ? Math.round(p.progress) : null;
-    return { code: 'parity', label: pct != null ? `Parity Check ${pct}%` : 'Parity Check' };
-  }
-  return { code: 'ok', label: 'OK' };
-}
-
-/* ---------------- Public: unified host status ---------------- */
-export async function getHostStatus(baseUrl) {
-  // Assume offline until a request succeeds
-  let offline = false;
+// Try new schema first, fall back if fields missing
+async function fetchArrayStatus(base, token, allowSelfSigned) {
   try {
-    const sys = await tryQueries(baseUrl, Q_INFO_ARRAY);
-
-    // basic info
-    let arrayState = sys.array?.state || sys.array?.status || null;
-    // parity
-    let parityInfo = null;
-    try {
-      const p = await tryQueries(baseUrl, Q_PARITY);
-      const a = p?.array || {};
-      // normalize to {progress?, state/kind/status?, error?}
-      parityInfo =
-        a.operation ?? a.parityCheck ??
-        (Array.isArray(a.tasks) ? a.tasks.find(t=>/parity|check/i.test(t.kind||'')) : null) ?? null;
-    } catch { /* schema may not expose parity when idle */ }
-
-    // metrics
-    let cpuPct = null, ramPct = null;
-    try {
-      const m = await tryQueries(baseUrl, Q_HOST_METRICS);
-      if (m.metrics) {
-        cpuPct = m.metrics.cpu?.percent ?? null;
-        ramPct = m.metrics.memory?.percentUsed ?? null;
-      } else if (m.host) {
-        cpuPct = m.host.cpuPct ?? null;
-        ramPct = m.host.memoryPct ?? null;
-      } else if (m.resources) {
-        cpuPct = m.resources.cpuPercent ?? null;
-        ramPct = m.resources.memPercent ?? null;
-      }
-    } catch { /* leave nulls */ }
-
-    // storage %
-    let storagePct = null;
-    try {
-      const cap = await tryQueries(baseUrl, Q_ARRAY_CAPACITY);
-      if (cap.array?.capacity) {
-        const t = Number(cap.array.capacity.total ?? 0);
-        const u = Number(cap.array.capacity.used ?? NaN);
-        const f = Number(cap.array.capacity.free ?? NaN);
-        if (t > 0) {
-          if (!isNaN(u)) storagePct = Math.round((u / t) * 100);
-          else if (!isNaN(f)) storagePct = Math.round(((t - f) / t) * 100);
+    const data = await gql(base, token, `
+      query Info {
+        infoArray {
+          started
+          operation
+          operationProgress
+          errors
+          capacity {
+            total
+            free
+          }
         }
-      } else if (cap.array?.size != null && cap.array?.free != null) {
-        const t = Number(cap.array.size), f = Number(cap.array.free);
-        if (t > 0) storagePct = Math.round(((t - f) / t) * 100);
       }
-    } catch { /* ignore */ }
+    `, {}, allowSelfSigned);
 
-    // small summaries
-    let dockerRun = 0, dockerTot = 0, vmRun = 0, vmTot = 0;
-    try {
-      const d = await tryQueries(baseUrl, Q_DOCKERS);
-      const arr = d.docker?.containers || d.docker?.list || [];
-      dockerTot = arr.length;
-      dockerRun = arr.filter(c => (c.state || '').toLowerCase() === 'running' ||
-        String(c.status||'').toLowerCase().includes('up')).length;
-    } catch {}
-    try {
-      const v = await tryQueries(baseUrl, Q_VMS);
-      const doms = v?.vms?.domains || [];
-      vmTot = doms.length;
-      vmRun = doms.filter(x => String(x.state).toLowerCase() === 'running').length;
-    } catch {}
+    const arr = data?.infoArray || {};
+    const total = num(arr?.capacity?.total);
+    const free = num(arr?.capacity?.free);
+    const used = Math.max(0, total - free);
+    const storagePct = pct(used, total);
 
-    const status = classifyStatus(arrayState, parityInfo, null);
+    // Map to pill text
+    let status = "OK";
+    if (!arr?.started) status = "Offline";
+    if (String(arr?.operation || "").toLowerCase().includes("parity")) {
+      const prog = num(arr?.operationProgress);
+      status = prog > 0 ? "Parity Check" : "Parity Check";
+    }
+    if (num(arr?.errors) > 0) status = "Error";
 
-    return {
-      ok: true,
-      data: {
-        system: { array: { status: arrayState } },
-        status, // {code,label}
-        docker: { running: dockerRun, total: dockerTot },
-        vms: { running: vmRun, total: vmTot },
-        metrics: { cpuPct, ramPct, storagePct }
-      }
-    };
+    return { started: !!arr?.started, storagePct, status };
   } catch (e) {
-    offline = true;
-    return { ok: false, error: e.message || String(e) };
-  } finally {
-    // nothing to do here; offline handled by caller
+    // Fall back: minimal “array started” and capacity from /api/var if present
+    try {
+      const res = await fetch(`${base}/api/var`, { headers: authHeaders(token), agent: getAgent(allowSelfSigned) });
+      const js = await res.json();
+      const started = js?.arrayStarted === true || js?.arrayStarted === "yes";
+      const t = num(js?.arrayTotalBytes);
+      const f = num(js?.arrayFreeBytes);
+      const storagePct = pct(Math.max(0, t - f), t);
+      let status = started ? "OK" : "Offline";
+      if (String(js?.arrayOp || "").toLowerCase().includes("parity")) status = "Parity Check";
+      return { started, storagePct, status };
+    } catch {
+      // Last resort
+      return { started: false, storagePct: 0, status: "Offline" };
+    }
   }
 }
 
-/* Containers / VMs (unchanged) */
-export async function listContainers(baseUrl) {
-  const d = await tryQueries(baseUrl, Q_DOCKERS);
-  const arr = d.docker?.containers || d.docker?.list || [];
-  return arr.map(c => ({
-    id: c.id,
-    name: Array.isArray(c.names) ? (c.names[0] || c.id) : (c.name || c.id),
-    image: c.image || '',
-    state: c.state || (String(c.status || '').toLowerCase().includes('up') ? 'running' : 'stopped')
-  }));
-}
-export async function listVMs(baseUrl) {
+async function fetchCpuRam(base, token, allowSelfSigned) {
+  // Try GraphQL hardware summary; fall back to REST metrics.
   try {
-    const d = await tryQueries(baseUrl, Q_VMS);
-    const arr = d?.vms?.domains || [];
-    return arr.map(v => ({ id: v.id, name: v.name, state: v.state }));
-  } catch { return []; }
+    const data = await gql(base, token, `
+      query Hw {
+        infoHardware {
+          cpuLoadPct
+          memory {
+            total
+            free
+          }
+        }
+      }
+    `, {}, allowSelfSigned);
+    const load = Math.max(0, Math.min(100, Math.round(num(data?.infoHardware?.cpuLoadPct))));
+    const mt = num(data?.infoHardware?.memory?.total);
+    const mf = num(data?.infoHardware?.memory?.free);
+    const ram = pct(Math.max(0, mt - mf), mt);
+    return { cpuPct: load, ramPct: ram };
+  } catch {
+    try {
+      const res = await fetch(`${base}/api/dws/metrics`, { headers: authHeaders(token), agent: getAgent(allowSelfSigned) });
+      const js = await res.json();
+      const load = Math.round(num(js?.system?.cpu?.overallLoadPct));
+      const mt = num(js?.system?.memory?.totalBytes);
+      const mf = num(js?.system?.memory?.freeBytes);
+      const ram = pct(Math.max(0, mt - mf), mt);
+      return { cpuPct: Math.max(0, Math.min(100, load)), ramPct: ram };
+    } catch {
+      return { cpuPct: 0, ramPct: 0 };
+    }
+  }
 }
 
-/* Mutations (same as before) */
-export async function containerAction(baseUrl, id, action) {
-  if (action === 'restart') {
-    await containerAction(baseUrl, id, 'stop');
-    return containerAction(baseUrl, id, 'start');
-  }
-  const field = (action === 'start' ? 'start' : 'stop');
-  const queries = [
-    `mutation($id:ID!){ docker { ${field}(id:$id) } }`,
-    `mutation($id:String!){ docker { ${field}(containerId:$id) } }`,
-    `mutation{ docker { ${field}(id:"${id}") } }`
-  ];
-  let lastErr;
-  for (const [i,q] of queries.entries()) {
-    try { await gql(baseUrl, q, i===0?{id}:{id}); return true; }
-    catch (e){ lastErr = e; if (!e._validation) break; }
-  }
-  throw lastErr;
+export async function testConnection({ base, token, allowSelfSigned }) {
+  const r = await fetch(`${base}/version`, {
+    headers: authHeaders(token),
+    agent: getAgent(allowSelfSigned),
+  });
+  if (!r.ok) return { ok: false, status: r.status };
+  return { ok: true, status: r.status };
 }
-export async function vmAction(baseUrl, id, action) {
-  const allowed = new Set(['start','stop','pause','resume','forceStop','reboot','reset']);
-  if (!allowed.has(action)) throw new Error(`Unsupported VM action: ${action}`);
-  const queries = [
-    `mutation($id:ID!){ vm { ${action}(id:$id) } }`,
-    `mutation($id:String!){ vm { ${action}(domainId:$id) } }`,
-    `mutation{ vm { ${action}(id:"${id}") } }`
-  ];
-  let lastErr;
-  for (const [i,q] of queries.entries()) {
-    try { await gql(baseUrl, q, i===0?{id}:{id}); return true; }
-    catch (e){ lastErr = e; if (!e._validation) break; }
+
+export async function fetchPartialStatus({ name, base, mac, token, allowSelfSigned }) {
+  const [{ cpuPct, ramPct }, arr] = await Promise.all([
+    fetchCpuRam(base, token, allowSelfSigned),
+    fetchArrayStatus(base, token, allowSelfSigned),
+  ]);
+
+  // Status pill synthesis
+  let status = arr.status;
+  if (status === "Offline") {
+    return { name, base, cpuPct: 0, ramPct: 0, storagePct: 0, status, canWake: Boolean(mac) };
   }
-  throw lastErr;
+  return {
+    name,
+    base,
+    cpuPct,
+    ramPct,
+    storagePct: arr.storagePct,
+    status,
+    canWake: Boolean(mac),
+  };
 }
-export async function powerAction() {
-  throw new Error('System power actions are not available via this Unraid API.');
+
+// WoL
+export async function wake(mac) {
+  // Send a magic packet using a tiny UDP implementation without deps.
+  const dgram = await import("dgram");
+  const socket = dgram.createSocket("udp4");
+  const macBytes = mac.replace(/[^A-Fa-f0-9]/g, "").match(/.{1,2}/g).map(h => parseInt(h, 16));
+  if (macBytes.length !== 6) throw new Error("Invalid MAC for WOL");
+  const buf = Buffer.alloc(6 + 16 * 6, 0xff);
+  for (let i = 0; i < 16; i++) Buffer.from(macBytes).copy(buf, 6 + i * 6);
+  await new Promise((resolve, reject) => {
+    socket.once("error", reject);
+    socket.send(buf, 9, "255.255.255.255", (err) => {
+      socket.close();
+      if (err) reject(err); else resolve();
+    });
+    socket.setBroadcast(true);
+  });
 }
