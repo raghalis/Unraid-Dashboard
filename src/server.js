@@ -5,9 +5,10 @@ import path from "path";
 import fs from "fs";
 import cors from "cors";
 import { fileURLToPath } from "url";
-import { fetchPartialStatus, testConnection, wake } from "./unraid.js";
 
-// ---------------------- env & constants ----------------------
+// NOTE: fixed import paths to match your repo layout
+import { fetchPartialStatus, testConnection, wake } from "./api/unraid.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -25,7 +26,7 @@ const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // ---------------------- tiny logger --------------------------
-const levels = ["error","warn","info","debug"];
+const levels = ["error", "warn", "info", "debug"];
 function now() {
   return new Date().toLocaleString(undefined, { hour12: true, timeZone: TZ });
 }
@@ -40,10 +41,10 @@ function log(level, msg, ctx = null) {
   }
 }
 const L = {
-  error: (m,c) => log("error",m,c),
-  warn:  (m,c) => log("warn",m,c),
-  info:  (m,c) => log("info",m,c),
-  debug: (m,c) => log("debug",m,c),
+  error: (m, c) => log("error", m, c),
+  warn: (m, c) => log("warn", m, c),
+  info: (m, c) => log("info", m, c),
+  debug: (m, c) => log("debug", m, c),
 };
 
 // ---------------------- settings io --------------------------
@@ -79,10 +80,10 @@ const clientDir = path.join(__dirname, "web");
 app.use(express.static(clientDir, { index: false }));
 
 // Public health & version — **no auth**
-app.get("/health", (req, res) => {
+app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true, ts: Date.now() });
 });
-app.get("/version", (req, res) => {
+app.get("/version", (_req, res) => {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
     res.json({ version: pkg.version });
@@ -91,8 +92,7 @@ app.get("/version", (req, res) => {
   }
 });
 
-// Apply basic auth to *API* & *HTML entry points*
-// (but not to static files or health/version)
+// Apply basic auth to *API* & *HTML entry points* (not health/version or static)
 if (BASIC_AUTH_USER && BASIC_AUTH_PASS) {
   const auth = basicAuth({
     users: { [BASIC_AUTH_USER]: BASIC_AUTH_PASS },
@@ -100,17 +100,22 @@ if (BASIC_AUTH_USER && BASIC_AUTH_PASS) {
     unauthorizedResponse: () => "Unauthorized",
   });
 
-  // Protect API routes
   app.use((req, res, next) => {
-    const open = req.path === "/health" || req.path === "/version" || req.path.startsWith("/css/") || req.path.startsWith("/js/") || req.path.startsWith("/assets/");
+    const open =
+      req.path === "/health" ||
+      req.path === "/version" ||
+      req.path.startsWith("/css/") ||
+      req.path.startsWith("/js/") ||
+      req.path.startsWith("/assets/");
     if (open) return next();
     if (req.path.startsWith("/api")) return auth(req, res, next);
     return next();
   });
 
   // Protect HTML entry points (/, /dashboard, /settings)
-  const protectHtml = ["/", "/dashboard", "/settings"];
-  protectHtml.forEach(route => app.get(route, auth, (req, res, next) => next()));
+  ["/", "/dashboard", "/settings"].forEach((route) =>
+    app.get(route, auth, (req, res, next) => next()),
+  );
 }
 
 // ---------------------- http access log (human) --------------
@@ -118,14 +123,15 @@ app.use((req, res, next) => {
   const start = Date.now();
   res.on("finish", () => {
     const ms = Date.now() - start;
-    const ctx = DEBUG_HTTP ? { method: req.method, url: req.originalUrl, status: res.statusCode, ms } : undefined;
-    L.info("http", ctx);
+    const ctx = { method: req.method, url: req.originalUrl, status: res.statusCode, ms };
+    // Always log a concise line; include full ctx only when DEBUG_HTTP=true
+    L.info(`http ${req.method} ${req.originalUrl} ${res.statusCode} ${ms}ms`, DEBUG_HTTP ? ctx : undefined);
   });
   next();
 });
 
 // ---------------------- API: settings ------------------------
-app.get("/api/settings/hosts", (req, res) => {
+app.get("/api/settings/hosts", (_req, res) => {
   const s = readSettings();
   res.json(s.hosts || []);
 });
@@ -135,7 +141,7 @@ app.post("/api/settings/hosts", (req, res) => {
     return res.status(400).json({ error: "name, base and token are required" });
   }
   const s = readSettings();
-  const exists = (s.hosts || []).find(h => h.base === base);
+  const exists = (s.hosts || []).find((h) => h.base === base);
   if (exists) return res.status(409).json({ error: "Host already exists" });
   s.hosts.push({ name, base, mac: mac || "", token, addedAt: Date.now() });
   writeSettings(s);
@@ -145,7 +151,7 @@ app.put("/api/settings/hosts", (req, res) => {
   const { base, patch } = req.body || {};
   if (!base || !patch) return res.status(400).json({ error: "base and patch are required" });
   const s = readSettings();
-  const idx = (s.hosts || []).findIndex(h => h.base === base);
+  const idx = (s.hosts || []).findIndex((h) => h.base === base);
   if (idx < 0) return res.status(404).json({ error: "Host not found" });
   s.hosts[idx] = { ...s.hosts[idx], ...patch, updatedAt: Date.now() };
   writeSettings(s);
@@ -155,13 +161,13 @@ app.delete("/api/settings/hosts", (req, res) => {
   const { base } = req.query;
   if (!base) return res.status(400).json({ error: "base required" });
   const s = readSettings();
-  s.hosts = (s.hosts || []).filter(h => h.base !== String(base));
+  s.hosts = (s.hosts || []).filter((h) => h.base !== String(base));
   writeSettings(s);
   res.json({ ok: true });
 });
 
 // App settings
-app.get("/api/app", (req, res) => {
+app.get("/api/app", (_req, res) => {
   const s = readSettings();
   res.json(s.app || {});
 });
@@ -180,7 +186,11 @@ app.post("/api/app", (req, res) => {
 app.post("/api/test", async (req, res) => {
   const { base, token, allowSelfSigned } = req.body || {};
   try {
-    const r = await testConnection({ base, token, allowSelfSigned: allowSelfSigned ?? ALLOW_SELF_SIGNED });
+    const r = await testConnection({
+      base,
+      token,
+      allowSelfSigned: allowSelfSigned ?? ALLOW_SELF_SIGNED,
+    });
     res.json(r);
   } catch (e) {
     L.warn("test.failed", { base, err: String(e?.message || e) });
@@ -188,40 +198,42 @@ app.post("/api/test", async (req, res) => {
   }
 });
 
-app.get("/api/servers", async (_req, res) => {
+app.get("/api/servers", (_req, res) => {
   const s = readSettings();
   const hosts = s.hosts || [];
-  res.json(hosts.map(h => ({ name: h.name, base: h.base })));
+  res.json(hosts.map((h) => ({ name: h.name, base: h.base })));
 });
 
 app.get("/api/status/partial", async (_req, res) => {
   const s = readSettings();
   const hosts = s.hosts || [];
   L.info("servers.list", { count: hosts.length });
-  const results = await Promise.all(hosts.map(async (h) => {
-    try {
-      const stat = await fetchPartialStatus({
-        name: h.name,
-        base: h.base,
-        mac: h.mac || "",
-        token: h.token,
-        allowSelfSigned: s?.app?.allowSelfSigned ?? ALLOW_SELF_SIGNED,
-      });
-      return { ok: true, ...stat };
-    } catch (e) {
-      L.warn("status.partial", { base: h.base, error: String(e?.message || e) });
-      return {
-        ok: false,
-        name: h.name,
-        base: h.base,
-        status: "Offline",
-        cpuPct: 0,
-        ramPct: 0,
-        storagePct: 0,
-        canWake: Boolean(h.mac),
-      };
-    }
-  }));
+  const results = await Promise.all(
+    hosts.map(async (h) => {
+      try {
+        const stat = await fetchPartialStatus({
+          name: h.name,
+          base: h.base,
+          mac: h.mac || "",
+          token: h.token,
+          allowSelfSigned: s?.app?.allowSelfSigned ?? ALLOW_SELF_SIGNED,
+        });
+        return { ok: true, ...stat };
+      } catch (e) {
+        L.warn("status.partial", { base: h.base, error: String(e?.message || e) });
+        return {
+          ok: false,
+          name: h.name,
+          base: h.base,
+          status: "Offline",
+          cpuPct: 0,
+          ramPct: 0,
+          storagePct: 0,
+          canWake: Boolean(h.mac),
+        };
+      }
+    }),
+  );
   res.json({ hosts: results });
 });
 
